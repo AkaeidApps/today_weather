@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:dio/dio.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:intl/intl.dart';
@@ -12,6 +13,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app.dart';
 import 'core/theme/atmos_theme.dart';
+import 'models/background_scene.dart';
 
 void main() => runApp(const AtmosApp(home: WeatherShell()));
 
@@ -36,12 +38,14 @@ class Place {
 class WeatherData {
   WeatherData(this.json);
   final Map<String, dynamic> json;
+
   Map<String, dynamic> get current =>
       Map<String, dynamic>.from(json['current'] ?? {});
   Map<String, dynamic> get daily =>
       Map<String, dynamic>.from(json['daily'] ?? {});
   Map<String, dynamic> get hourly =>
       Map<String, dynamic>.from(json['hourly'] ?? {});
+
   double get temp => (current['temperature_2m'] as num?)?.toDouble() ?? 0;
   double get feels =>
       (current['apparent_temperature'] as num?)?.toDouble() ?? temp;
@@ -62,8 +66,10 @@ class WeatherData {
   double get low =>
       ((daily['temperature_2m_min'] as List?)?.first as num?)?.toDouble() ??
       temp;
+
   DateTime get localTime =>
       DateTime.tryParse('${current['time'] ?? ''}') ?? DateTime.now();
+
   DateTime? _dailyTime(String key) {
     final list = daily[key] as List?;
     return list == null || list.isEmpty
@@ -73,6 +79,7 @@ class WeatherData {
 
   String get timezone => '${json['timezone'] ?? 'UTC'}';
   String get description => weatherText(code);
+
   bool isDay(Place place) {
     final time = localTime;
     final sr = _dailyTime('sunrise'), ss = _dailyTime('sunset');
@@ -83,6 +90,38 @@ class WeatherData {
         sunset != null &&
         time.hour >= DateTime.parse('$sunrise').hour &&
         time.hour < DateTime.parse('$sunset').hour;
+  }
+
+  /// Calculates atmospheric background scene based on time of day (Sunrise, Sunset, Night, Day)
+  BackgroundScene get automaticScene {
+    final time = localTime;
+    final sr = _dailyTime('sunrise');
+    final ss = _dailyTime('sunset');
+
+    if (sr != null && ss != null) {
+      final sunriseStart = sr.subtract(const Duration(minutes: 50));
+      final sunriseEnd = sr.add(const Duration(minutes: 60));
+      final sunsetStart = ss.subtract(const Duration(minutes: 60));
+      final sunsetEnd = ss.add(const Duration(minutes: 50));
+
+      if (time.isAfter(sunriseStart) && time.isBefore(sunriseEnd)) {
+        return BackgroundScene.sunrise;
+      }
+      if (time.isAfter(sunsetStart) && time.isBefore(sunsetEnd)) {
+        return BackgroundScene.sunset;
+      }
+      if (time.isAfter(sr) && time.isBefore(ss)) {
+        return BackgroundScene.sunrise; // daytime horizon
+      }
+      return BackgroundScene.moonlight;
+    }
+
+    // Fallback heuristic based on local hour
+    final hour = time.hour;
+    if (hour >= 5 && hour <= 7) return BackgroundScene.sunrise;
+    if (hour >= 17 && hour <= 19) return BackgroundScene.sunset;
+    if (hour >= 20 || hour < 5) return BackgroundScene.moonlight;
+    return BackgroundScene.sunrise;
   }
 
   String get sunrise => '${(daily['sunrise'] as List?)?.firstOrNull ?? '—'}';
@@ -105,6 +144,7 @@ String weatherText(int code) => switch (code) {
   95 || 96 || 99 => 'Thunderstorm',
   _ => 'Weather data',
 };
+
 IconData weatherIcon(int code, {bool night = false}) => switch (code) {
   0 => night ? Icons.nightlight_round : Icons.wb_sunny_rounded,
   1 || 2 => night ? Icons.nights_stay_rounded : Icons.wb_cloudy_rounded,
@@ -125,6 +165,166 @@ IconData weatherIcon(int code, {bool night = false}) => switch (code) {
   _ => Icons.cloud_rounded,
 };
 
+/// Smooth 3D tilt, hover scale, cursor, and mouse glow wrapper widget.
+class HoverCard extends StatefulWidget {
+  const HoverCard({
+    super.key,
+    required this.child,
+    this.borderRadius = 20,
+    this.onTap,
+    this.enableTilt = true,
+    this.padding,
+    this.margin,
+    this.decoration,
+    this.depth = 1.0,
+  });
+
+  final Widget child;
+  final double borderRadius;
+  final VoidCallback? onTap;
+  final bool enableTilt;
+  final EdgeInsetsGeometry? padding;
+  final EdgeInsetsGeometry? margin;
+  final BoxDecoration? decoration;
+  final double depth;
+
+  @override
+  State<HoverCard> createState() => _HoverCardState();
+}
+
+class _HoverCardState extends State<HoverCard>
+    with SingleTickerProviderStateMixin {
+  bool _hovered = false;
+  bool _pressed = false;
+  Offset _mousePos = Offset.zero;
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      cursor: widget.onTap != null
+          ? SystemMouseCursors.click
+          : SystemMouseCursors.basic,
+      onEnter: (e) => setState(() {
+        _hovered = true;
+        _mousePos = e.localPosition;
+      }),
+      onHover: (e) => setState(() => _mousePos = e.localPosition),
+      onExit: (_) => setState(() {
+        _hovered = false;
+        _mousePos = Offset.zero;
+      }),
+      child: GestureDetector(
+        onTapDown: (_) => setState(() => _pressed = true),
+        onTapUp: (_) => setState(() => _pressed = false),
+        onTapCancel: () => setState(() => _pressed = false),
+        onTap: widget.onTap,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final width = constraints.hasBoundedWidth && constraints.maxWidth > 0
+                ? constraints.maxWidth
+                : 300.0;
+            final height = constraints.hasBoundedHeight && constraints.maxHeight > 0
+                ? constraints.maxHeight
+                : 200.0;
+
+            final dx = _hovered && widget.enableTilt
+                ? ((_mousePos.dx / width) - 0.5) * widget.depth
+                : 0.0;
+            final dy = _hovered && widget.enableTilt
+                ? ((_mousePos.dy / height) - 0.5) * widget.depth
+                : 0.0;
+
+            final matrix = Matrix4.identity()
+              ..setEntry(3, 2, 0.001)
+              ..rotateX(-dy * 0.08)
+              ..rotateY(dx * 0.08);
+
+            final scale = _pressed
+                ? 0.97
+                : _hovered
+                    ? 1.018
+                    : 1.0;
+
+            final baseDeco = widget.decoration ??
+                BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(widget.borderRadius),
+                  border: Border.all(
+                    color: _hovered
+                        ? sea.withOpacity(0.35)
+                        : const Color(0xffedf0f1),
+                    width: _hovered ? 1.5 : 1.0,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: _hovered
+                          ? sea.withOpacity(0.12)
+                          : const Color(0x0a101922),
+                      blurRadius: _hovered ? 26 : 16,
+                      offset: Offset(0, _hovered ? 10 : 5),
+                      spreadRadius: _hovered ? 2 : 0,
+                    ),
+                  ],
+                );
+
+            return AnimatedContainer(
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOutCubic,
+              margin: widget.margin,
+              transform: matrix..scale(scale, scale, 1.0),
+              transformAlignment: Alignment.center,
+              child: Container(
+                padding: widget.padding,
+                decoration: baseDeco,
+                clipBehavior: Clip.antiAlias,
+                child: Stack(
+                  children: [
+                    widget.child,
+                    if (_hovered)
+                      Positioned.fill(
+                        child: IgnorePointer(
+                          child: AnimatedOpacity(
+                            duration: const Duration(milliseconds: 200),
+                            opacity: _hovered ? 0.07 : 0.0,
+                            child: CustomPaint(
+                              painter: _GlowPainter(
+                                position: _mousePos,
+                                color: sea,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _GlowPainter extends CustomPainter {
+  _GlowPainter({required this.position, required this.color});
+  final Offset position;
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..shader = RadialGradient(
+        colors: [color.withOpacity(0.8), Colors.transparent],
+      ).createShader(Rect.fromCircle(center: position, radius: size.width * 0.6));
+    canvas.drawRect(Offset.zero & size, paint);
+  }
+
+  @override
+  bool shouldRepaint(_GlowPainter oldDelegate) =>
+      oldDelegate.position != position;
+}
+
 class WeatherShell extends StatefulWidget {
   const WeatherShell({super.key});
   @override
@@ -143,17 +343,23 @@ class _WeatherShellState extends State<WeatherShell> {
   Map<String, dynamic>? _air;
   bool _loading = true,
       _airLoading = true,
-      _fahrenheit = false,
-      _previewNight = false,
-      _manualPreview = false;
+      _fahrenheit = false;
+
+  BackgroundMode _bgMode = BackgroundMode.automatic;
+
   String? _error;
   int _tab = 0;
-  List<Place> _recent = [];
+  final List<Place> _recent = [];
   List<Place> _favorites = [];
   Timer? _searchTimer;
   List<Place> _results = [];
   bool _searching = false;
   final _searchCtl = TextEditingController();
+
+  // Mouse Parallax coordinates for hero sky card
+  Offset _heroMouse = Offset.zero;
+  bool _heroHovered = false;
+
   static const pages = [
     'Today',
     'Map',
@@ -166,6 +372,7 @@ class _WeatherShellState extends State<WeatherShell> {
     'About',
     'Settings',
   ];
+
   @override
   void initState() {
     super.initState();
@@ -184,6 +391,8 @@ class _WeatherShellState extends State<WeatherShell> {
     if (!mounted) return;
     setState(() {
       _fahrenheit = p.getBool('fahrenheit') ?? false;
+      final modeIndex = p.getInt('bg_mode') ?? 0;
+      _bgMode = BackgroundMode.values[modeIndex.clamp(0, BackgroundMode.values.length - 1)];
       _favorites = (p.getStringList('favorites') ?? [])
           .map(_decodePlace)
           .whereType<Place>()
@@ -211,9 +420,11 @@ class _WeatherShellState extends State<WeatherShell> {
 
   String _encodePlace(Place p) =>
       '${p.name}|${p.country}|${p.lat}|${p.lon}|${p.timezone}';
+
   Future<void> _persist() async {
     final p = await SharedPreferences.getInstance();
     await p.setBool('fahrenheit', _fahrenheit);
+    await p.setInt('bg_mode', _bgMode.index);
     await p.setString('place', _encodePlace(_place));
     await p.setStringList('favorites', _favorites.map(_encodePlace).toList());
   }
@@ -222,7 +433,7 @@ class _WeatherShellState extends State<WeatherShell> {
     setState(() => _loading = true);
     _error = null;
     try {
-      final url = 'https://api.open-meteo.com/v1/forecast';
+      const url = 'https://api.open-meteo.com/v1/forecast';
       final r = await _dio.get(
         url,
         queryParameters: {
@@ -231,19 +442,24 @@ class _WeatherShellState extends State<WeatherShell> {
           'timezone': 'auto',
           'forecast_days': 7,
           'forecast_hours': 48,
-          'current': 'temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,weather_code,cloud_cover,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,uv_index,visibility',
-          'hourly': 'temperature_2m,precipitation_probability,precipitation,weather_code,wind_speed_10m,relative_humidity_2m',
-          'daily': 'weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset,precipitation_probability_max,wind_speed_10m_max,uv_index_max',
+          'current':
+              'temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,weather_code,cloud_cover,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,uv_index,visibility',
+          'hourly':
+              'temperature_2m,precipitation_probability,precipitation,weather_code,wind_speed_10m,relative_humidity_2m',
+          'daily':
+              'weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset,precipitation_probability_max,wind_speed_10m_max,uv_index_max',
         },
       );
       if (!mounted) return;
       setState(() => _weather = WeatherData(Map<String, dynamic>.from(r.data)));
       _loadAir();
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         setState(
-          () => _error = 'Weather data is unavailable. Check your connection and try again.',
+          () => _error =
+              'Weather data is unavailable. Check your connection and try again.',
         );
+      }
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -258,13 +474,15 @@ class _WeatherShellState extends State<WeatherShell> {
           'latitude': _place.lat,
           'longitude': _place.lon,
           'timezone': 'auto',
-          'current': 'european_aqi,us_aqi,pm2_5,pm10,carbon_monoxide,nitrogen_dioxide,ozone,sulphur_dioxide',
+          'current':
+              'european_aqi,us_aqi,pm2_5,pm10,carbon_monoxide,nitrogen_dioxide,ozone,sulphur_dioxide',
         },
       );
-      if (mounted)
+      if (mounted) {
         setState(
           () => _air = Map<String, dynamic>.from(r.data['current'] ?? {}),
         );
+      }
     } catch (_) {
       if (mounted) setState(() => _air = null);
     } finally {
@@ -323,16 +541,19 @@ class _WeatherShellState extends State<WeatherShell> {
 
   Future<void> _gps() async {
     try {
-      if (!await Geolocator.isLocationServiceEnabled())
+      if (!await Geolocator.isLocationServiceEnabled()) {
         throw Exception('Enable location services to use your location.');
+      }
       var p = await Geolocator.checkPermission();
-      if (p == LocationPermission.denied)
+      if (p == LocationPermission.denied) {
         p = await Geolocator.requestPermission();
+      }
       if (p == LocationPermission.denied ||
-          p == LocationPermission.deniedForever)
+          p == LocationPermission.deniedForever) {
         throw Exception(
           'Location permission was not granted. Search for a city instead.',
         );
+      }
       final pos = await Geolocator.getCurrentPosition();
       Place here = Place(
         'My location',
@@ -351,7 +572,7 @@ class _WeatherShellState extends State<WeatherShell> {
           },
         );
         final x = (r.data['results'] as List?)?.first;
-        if (x != null)
+        if (x != null) {
           here = Place(
             '${x['name']}',
             '${x['country'] ?? ''}',
@@ -359,13 +580,15 @@ class _WeatherShellState extends State<WeatherShell> {
             pos.longitude,
             '${x['timezone'] ?? 'auto'}',
           );
+        }
       } catch (_) {}
       await _choose(here);
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
         );
+      }
     }
   }
 
@@ -373,19 +596,44 @@ class _WeatherShellState extends State<WeatherShell> {
       '${_fahrenheit ? (n * 9 / 5 + 32).round() : n.round()}°';
   String _clock(String value) =>
       value.length >= 16 ? value.substring(11, 16) : '—';
-  bool get _night => _manualPreview
-      ? _previewNight
-      : (_weather == null ? false : !_weather!.isDay(_place));
+
+  /// Returns the current active background scene (Sunrise, Sunset, Moonlight/Night, Daytime)
+  BackgroundScene get _activeScene {
+    if (_bgMode.previewScene != null) {
+      return _bgMode.previewScene!;
+    }
+    if (_weather == null) return BackgroundScene.sunrise;
+    return _weather!.automaticScene;
+  }
+
   @override
   Widget build(BuildContext context) {
     final wide = MediaQuery.sizeOf(context).width > 850;
     return Scaffold(
+      backgroundColor: cream,
       body: SafeArea(
         child: Column(
           children: [
             _header(wide),
             if (_error != null) _errorBanner(),
-            Expanded(child: wide ? _desktopBody() : _mobileBody()),
+            Expanded(
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 380),
+                switchInCurve: Curves.easeOutCubic,
+                switchOutCurve: Curves.easeInCubic,
+                transitionBuilder: (child, animation) => FadeTransition(
+                  opacity: animation,
+                  child: SlideTransition(
+                    position: Tween<Offset>(
+                      begin: const Offset(0.015, 0),
+                      end: Offset.zero,
+                    ).animate(animation),
+                    child: child,
+                  ),
+                ),
+                child: wide ? _desktopBody() : _mobileBody(),
+              ),
+            ),
             if (!wide) _bottomNav(),
           ],
         ),
@@ -397,288 +645,410 @@ class _WeatherShellState extends State<WeatherShell> {
               backgroundColor: ink,
               foregroundColor: Colors.white,
               child: const Icon(Icons.my_location_rounded),
-            ),
+            ).animate().scale(delay: 300.ms, duration: 400.ms, curve: Curves.elasticOut),
     );
   }
 
   Widget _header(bool wide) => Container(
-    color: cream,
-    padding: EdgeInsets.symmetric(horizontal: wide ? 36 : 18, vertical: 13),
-    child: Row(
-      children: [
-        Container(
-          width: 38,
-          height: 38,
-          decoration: BoxDecoration(
-            color: ink,
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: const Icon(Icons.air_rounded, color: Colors.white, size: 23),
-        ),
-        const SizedBox(width: 11),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        color: cream,
+        padding: EdgeInsets.symmetric(horizontal: wide ? 36 : 18, vertical: 13),
+        child: Row(
           children: [
-            Text(
-              'ATMOS',
-              style: TextStyle(
-                fontWeight: FontWeight.w800,
-                fontSize: 15,
-                letterSpacing: 2.0,
-                color: ink,
+            MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [ink, Color(0xff293b4d)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(13),
+                  boxShadow: [
+                    BoxShadow(
+                      color: ink.withOpacity(0.2),
+                      blurRadius: 10,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: const Icon(Icons.air_rounded, color: Colors.white, size: 24),
               ),
+            ).animate().fadeIn(duration: 400.ms).scale(duration: 400.ms),
+            const SizedBox(width: 12),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'ATMOS',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w900,
+                    fontSize: 16,
+                    letterSpacing: 2.2,
+                    color: ink,
+                  ),
+                ),
+                Text(
+                  'WEATHER',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 9,
+                    letterSpacing: 3.0,
+                    color: sea,
+                  ),
+                ),
+              ],
+            ).animate().fadeIn(delay: 100.ms, duration: 400.ms),
+            if (wide) ...[
+              const SizedBox(width: 35),
+              Expanded(
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  physics: const BouncingScrollPhysics(),
+                  child: Row(
+                    children: List.generate(
+                      pages.length,
+                      (i) => _navLabel(i).animate().fadeIn(
+                            delay: Duration(milliseconds: 50 * i),
+                            duration: 300.ms,
+                          ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+            ],
+            IconButton(
+              tooltip: 'Use my location',
+              onPressed: _gps,
+              icon: const Icon(Icons.my_location_rounded, color: ink),
             ),
-            Text(
-              'WEATHER',
-              style: TextStyle(
-                fontWeight: FontWeight.w600,
-                fontSize: 9,
-                letterSpacing: 2.8,
-                color: muted,
+            if (wide)
+              IconButton(
+                tooltip: 'Temperature units',
+                onPressed: () => setState(() {
+                  _fahrenheit = !_fahrenheit;
+                  _persist();
+                }),
+                icon: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 200),
+                  child: Text(
+                    _fahrenheit ? '°F' : '°C',
+                    key: ValueKey(_fahrenheit),
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: sea,
+                      fontSize: 15,
+                    ),
+                  ),
+                ),
               ),
+            IconButton(
+              tooltip: 'Settings',
+              onPressed: () => setState(() => _tab = 9),
+              icon: const Icon(Icons.tune_rounded, color: ink),
             ),
           ],
         ),
-        if (wide) ...[
-          const SizedBox(width: 35),
-          Expanded(
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: List.generate(pages.length, (i) => _navLabel(i)),
+      );
+
+  Widget _navLabel(int i) => Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          decoration: BoxDecoration(
+            color: _tab == i ? sea.withOpacity(0.12) : Colors.transparent,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: TextButton(
+            onPressed: () => setState(() => _tab = i),
+            style: TextButton.styleFrom(
+              foregroundColor: _tab == i ? sea : muted,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            ),
+            child: Text(
+              pages[i],
+              style: TextStyle(
+                fontWeight: _tab == i ? FontWeight.w800 : FontWeight.w600,
+                fontSize: 13,
               ),
             ),
           ),
-          const SizedBox(width: 12),
-        ],
-        IconButton(
-          tooltip: 'Use my location',
-          onPressed: _gps,
-          icon: const Icon(Icons.my_location_rounded, color: ink),
         ),
-        if (wide)
-          IconButton(
-            tooltip: 'Temperature units',
-            onPressed: () => setState(() {
-              _fahrenheit = !_fahrenheit;
-              _persist();
-            }),
-            icon: Text(
-              _fahrenheit ? '°F' : '°C',
-              style: const TextStyle(fontWeight: FontWeight.bold, color: ink),
-            ),
-          ),
-        IconButton(
-          tooltip: 'Settings',
-          onPressed: () => setState(() => _tab = 9),
-          icon: const Icon(Icons.tune_rounded, color: ink),
-        ),
-      ],
-    ),
-  );
-  Widget _navLabel(int i) => Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 6),
-    child: TextButton(
-      onPressed: () => setState(() => _tab = i),
-      style: TextButton.styleFrom(foregroundColor: _tab == i ? sea : muted),
-      child: Text(
-        pages[i],
-        style: TextStyle(
-          fontWeight: _tab == i ? FontWeight.w700 : FontWeight.w500,
-          fontSize: 12,
-        ),
-      ),
-    ),
-  );
+      );
+
   Widget _bottomNav() => Container(
-    decoration: const BoxDecoration(
-      color: Colors.white,
-      border: Border(top: BorderSide(color: Color(0xffe9edef))),
-    ),
-    child: NavigationBar(
-      height: 66,
-      selectedIndex: _tab < 5 ? _tab : 0,
-      onDestinationSelected: (i) => setState(() => _tab = i),
-      backgroundColor: Colors.white,
-      indicatorColor: sea.withOpacity(.12),
-      destinations: const [
-        NavigationDestination(
-          icon: Icon(Icons.wb_sunny_outlined),
-          selectedIcon: Icon(Icons.wb_sunny_rounded),
-          label: 'Today',
-        ),
-        NavigationDestination(
-          icon: Icon(Icons.map_outlined),
-          selectedIcon: Icon(Icons.map),
-          label: 'Map',
-        ),
-        NavigationDestination(icon: Icon(Icons.schedule), label: 'Hourly'),
-        NavigationDestination(
-          icon: Icon(Icons.calendar_month_outlined),
-          label: '7 day',
-        ),
-        NavigationDestination(icon: Icon(Icons.menu), label: 'More'),
-      ],
-    ),
-  );
-  Widget _mobileBody() => _tab == 4 ? _moreMenu() : _content();
-  Widget _moreMenu() => ListView(
-    padding: const EdgeInsets.all(20),
-    children: [
-      const Text(
-        'Explore Aether',
-        style: TextStyle(fontSize: 23, fontWeight: FontWeight.w800, color: ink),
-      ),
-      const SizedBox(height: 18),
-      ...List.generate(pages.length - 5, (i) {
-        final k = i + 5;
-        return ListTile(
-          leading: Icon(_pageIcon(k), color: sea),
-          title: Text(pages[k]),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => setState(() => _tab = k),
-        );
-      }),
-    ],
-  );
-  IconData _pageIcon(int i) => switch (i) {
-    1 => Icons.map_outlined,
-    2 => Icons.schedule,
-    3 => Icons.calendar_month_outlined,
-    4 => Icons.air,
-    5 => Icons.blur_on,
-    6 => Icons.public,
-    7 => Icons.compare_arrows,
-    8 => Icons.info_outline,
-    _ => Icons.settings_outlined,
-  };
-  Widget _desktopBody() => Row(
-    children: [
-      Container(
-        width: 255,
         decoration: const BoxDecoration(
           color: Colors.white,
-          border: Border(right: BorderSide(color: Color(0xffe9edef))),
+          border: Border(top: BorderSide(color: Color(0xffe9edef))),
         ),
-        child: ListView(
-          padding: const EdgeInsets.all(20),
-          children: [
-            _searchBox(),
-            const SizedBox(height: 24),
-            _sideHeading('YOUR WEATHER'),
-            ...List.generate(
-              pages.length,
-              (i) => ListTile(
-                dense: true,
-                selected: _tab == i,
-                selectedTileColor: sea.withOpacity(.08),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                leading: Icon(
-                  _pageIcon(i),
-                  size: 20,
-                  color: _tab == i ? sea : muted,
-                ),
-                title: Text(
-                  pages[i],
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: _tab == i ? FontWeight.w700 : FontWeight.w500,
-                  ),
-                ),
-                onTap: () => setState(() => _tab = i),
-              ),
+        child: NavigationBar(
+          height: 66,
+          selectedIndex: _tab < 5 ? _tab : 0,
+          onDestinationSelected: (i) => setState(() => _tab = i),
+          backgroundColor: Colors.white,
+          indicatorColor: sea.withOpacity(.14),
+          destinations: const [
+            NavigationDestination(
+              icon: Icon(Icons.wb_sunny_outlined),
+              selectedIcon: Icon(Icons.wb_sunny_rounded, color: sea),
+              label: 'Today',
             ),
-            const SizedBox(height: 15),
-            _sideHeading('SAVED PLACES'),
-            ..._favorites.map(
-              (p) => ListTile(
-                dense: true,
-                leading: const Icon(
-                  Icons.star_rounded,
-                  color: Color(0xffd0a349),
-                ),
-                title: Text(p.name),
-                onTap: () => _choose(p),
-              ),
+            NavigationDestination(
+              icon: Icon(Icons.map_outlined),
+              selectedIcon: Icon(Icons.map, color: sea),
+              label: 'Map',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.schedule),
+              selectedIcon: Icon(Icons.schedule, color: sea),
+              label: 'Hourly',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.calendar_month_outlined),
+              selectedIcon: Icon(Icons.calendar_month, color: sea),
+              label: '7 day',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.menu),
+              selectedIcon: Icon(Icons.menu, color: sea),
+              label: 'More',
             ),
           ],
         ),
-      ),
-      Expanded(child: _content()),
-    ],
-  );
-  Widget _searchBox() => Column(
-    children: [
-      TextField(
-        controller: _searchCtl,
-        onChanged: _onSearch,
-        onTap: () => setState(() => _searching = true),
-        decoration: InputDecoration(
-          hintText: 'Search a city',
-          prefixIcon: const Icon(Icons.search_rounded),
-          filled: true,
-          fillColor: cream,
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(14),
-            borderSide: BorderSide.none,
-          ),
-          contentPadding: const EdgeInsets.symmetric(vertical: 12),
-        ),
-      ),
-      if (_searching && _results.isNotEmpty)
-        Container(
-          margin: const EdgeInsets.only(top: 4),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(14),
-            boxShadow: [BoxShadow(color: ink.withOpacity(.08), blurRadius: 18)],
-          ),
-          child: Column(
-            children: _results
-                .map(
-                  (p) => ListTile(
-                    dense: true,
-                    title: Text(p.name),
-                    subtitle: Text(p.country),
+      );
+
+  Widget _mobileBody() => _tab == 4 ? _moreMenu() : _content();
+
+  Widget _moreMenu() => ListView(
+        physics: const BouncingScrollPhysics(),
+        padding: const EdgeInsets.all(20),
+        children: [
+          const Text(
+            'Explore Aether',
+            style: TextStyle(
+              fontSize: 24,
+              fontWeight: FontWeight.w900,
+              color: ink,
+            ),
+          ).animate().fadeIn().slideX(begin: -0.1),
+          const SizedBox(height: 18),
+          ...List.generate(pages.length - 5, (i) {
+            final k = i + 5;
+            return HoverCard(
+              margin: const EdgeInsets.only(bottom: 10),
+              onTap: () => setState(() => _tab = k),
+              child: ListTile(
+                leading: Icon(_pageIcon(k), color: sea),
+                title: Text(
+                  pages[k],
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+                trailing: const Icon(Icons.chevron_right, color: muted),
+              ),
+            ).animate().fadeIn(
+                  delay: Duration(milliseconds: 60 * i),
+                  duration: 350.ms,
+                );
+          }),
+        ],
+      );
+
+  IconData _pageIcon(int i) => switch (i) {
+        1 => Icons.map_outlined,
+        2 => Icons.schedule,
+        3 => Icons.calendar_month_outlined,
+        4 => Icons.air,
+        5 => Icons.blur_on,
+        6 => Icons.public,
+        7 => Icons.compare_arrows,
+        8 => Icons.info_outline,
+        _ => Icons.settings_outlined,
+      };
+
+  Widget _desktopBody() => Row(
+        children: [
+          Container(
+            width: 265,
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              border: Border(right: BorderSide(color: Color(0xffe9edef))),
+            ),
+            child: ListView(
+              physics: const BouncingScrollPhysics(),
+              padding: const EdgeInsets.all(20),
+              children: [
+                _searchBox(),
+                const SizedBox(height: 24),
+                _sideHeading('YOUR WEATHER'),
+                ...List.generate(
+                  pages.length,
+                  (i) => HoverCard(
+                    enableTilt: false,
+                    margin: const EdgeInsets.only(bottom: 4),
+                    borderRadius: 12,
+                    onTap: () => setState(() => _tab = i),
+                    decoration: BoxDecoration(
+                      color: _tab == i ? sea.withOpacity(.10) : Colors.transparent,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 10,
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            _pageIcon(i),
+                            size: 20,
+                            color: _tab == i ? sea : muted,
+                          ),
+                          const SizedBox(width: 12),
+                          Text(
+                            pages[i],
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight:
+                                  _tab == i ? FontWeight.w800 : FontWeight.w600,
+                              color: _tab == i ? sea : ink,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ).animate().fadeIn(
+                        delay: Duration(milliseconds: 30 * i),
+                        duration: 300.ms,
+                      ),
+                ),
+                const SizedBox(height: 20),
+                _sideHeading('SAVED PLACES'),
+                ..._favorites.map(
+                  (p) => HoverCard(
+                    margin: const EdgeInsets.only(bottom: 6),
+                    borderRadius: 12,
                     onTap: () => _choose(p),
+                    child: ListTile(
+                      dense: true,
+                      leading: const Icon(
+                        Icons.star_rounded,
+                        color: Color(0xffd0a349),
+                      ),
+                      title: Text(
+                        p.name,
+                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                      subtitle: Text(
+                        p.country,
+                        style: const TextStyle(fontSize: 10, color: muted),
+                      ),
+                    ),
                   ),
-                )
-                .toList(),
+                ),
+              ],
+            ),
           ),
-        ),
-    ],
-  );
+          Expanded(child: _content()),
+        ],
+      );
+
+  Widget _searchBox() => Column(
+        children: [
+          TextField(
+            controller: _searchCtl,
+            onChanged: _onSearch,
+            onTap: () => setState(() => _searching = true),
+            decoration: InputDecoration(
+              hintText: 'Search a city...',
+              prefixIcon: const Icon(Icons.search_rounded, color: sea),
+              filled: true,
+              fillColor: cream,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(14),
+                borderSide: BorderSide.none,
+              ),
+              contentPadding: const EdgeInsets.symmetric(vertical: 12),
+            ),
+          ),
+          if (_searching && _results.isNotEmpty)
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 250),
+              margin: const EdgeInsets.only(top: 6),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(16),
+                boxShadow: [
+                  BoxShadow(
+                    color: ink.withOpacity(.12),
+                    blurRadius: 22,
+                    offset: const Offset(0, 8),
+                  ),
+                ],
+              ),
+              child: Column(
+                children: _results
+                    .map(
+                      (p) => ListTile(
+                        dense: true,
+                        title: Text(
+                          p.name,
+                          style: const TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                        subtitle: Text(p.country),
+                        onTap: () => _choose(p),
+                      ),
+                    )
+                    .toList(),
+              ),
+            ),
+        ],
+      );
+
   Widget _content() {
-    if (_loading && _weather == null)
-      return const Center(child: CircularProgressIndicator(color: sea));
-    if (_weather == null)
+    if (_loading && _weather == null) {
+      return const Center(
+        child: CircularProgressIndicator(color: sea, strokeWidth: 3),
+      );
+    }
+    if (_weather == null) {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(28),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.cloud_off_outlined, size: 42, color: muted),
-              const SizedBox(height: 12),
+              const Icon(Icons.cloud_off_outlined, size: 54, color: muted)
+                  .animate()
+                  .scale(duration: 500.ms, curve: Curves.elasticOut),
+              const SizedBox(height: 16),
               Text(
                 _error ?? 'Weather data is unavailable.',
                 textAlign: TextAlign.center,
-                style: const TextStyle(color: muted),
+                style: const TextStyle(color: muted, fontSize: 15),
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 18),
               FilledButton.icon(
                 onPressed: _load,
                 icon: const Icon(Icons.refresh),
                 label: const Text('Try again'),
+                style: FilledButton.styleFrom(
+                  backgroundColor: sea,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
+                ),
               ),
             ],
           ),
         ),
       );
+    }
+
     return LayoutBuilder(
       builder: (ctx, box) => SingleChildScrollView(
+        physics: const BouncingScrollPhysics(),
         padding: EdgeInsets.fromLTRB(
           box.maxWidth > 700 ? 38 : 18,
           box.maxWidth > 700 ? 26 : 16,
@@ -688,22 +1058,22 @@ class _WeatherShellState extends State<WeatherShell> {
         child: _tab == 0
             ? _dashboard(box.maxWidth)
             : _tab == 1
-            ? _mapPage()
-            : _tab == 2
-            ? _hourlyPage()
-            : _tab == 3
-            ? _weeklyPage()
-            : _tab == 4
-            ? _windPage()
-            : _tab == 5
-            ? _airPage()
-            : _tab == 6
-            ? _locationsPage()
-            : _tab == 7
-            ? _comparePage()
-            : _tab == 8
-            ? _aboutPage()
-            : _settingsPage(),
+                ? _mapPage()
+                : _tab == 2
+                    ? _hourlyPage()
+                    : _tab == 3
+                        ? _weeklyPage()
+                        : _tab == 4
+                            ? _windPage()
+                            : _tab == 5
+                                ? _airPage()
+                                : _tab == 6
+                                    ? _locationsPage()
+                                    : _tab == 7
+                                        ? _comparePage()
+                                        : _tab == 8
+                                            ? _aboutPage()
+                                            : _settingsPage(),
       ),
     );
   }
@@ -716,458 +1086,693 @@ class _WeatherShellState extends State<WeatherShell> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _hero(w, wide),
-        const SizedBox(height: 22),
+        const SizedBox(height: 24),
         _sectionTitle(
           'The next 24 hours',
           'A closer look at what’s ahead',
           onTap: () => setState(() => _tab = 2),
-        ),
-        const SizedBox(height: 12),
-        _hourStrip(w),
-        const SizedBox(height: 22),
+        ).animate().fadeIn(duration: 400.ms),
+        const SizedBox(height: 14),
+        _hourStrip(w).animate().fadeIn(delay: 100.ms, duration: 450.ms),
+        const SizedBox(height: 24),
         GridView.count(
           crossAxisCount: wide ? 4 : 2,
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
-          mainAxisSpacing: 12,
-          crossAxisSpacing: 12,
-          childAspectRatio: wide ? 1.7 : 1.45,
+          mainAxisSpacing: 14,
+          crossAxisSpacing: 14,
+          childAspectRatio: wide ? 1.65 : 1.45,
           children: [
             _metric(
               'FEELS LIKE',
               _temp(w.feels),
               Icons.thermostat_rounded,
               'in the shade',
+              0,
             ),
             _metric(
               'WIND',
               '${w.wind.round()} km/h',
               Icons.air_rounded,
               '${_compass(w.bearing)} · gusts ${w.gust.round()}',
+              1,
             ),
             _metric(
               'HUMIDITY',
               '${w.humidity}%',
               Icons.water_drop_outlined,
               '${w.rain.toStringAsFixed(1)} mm precipitation',
+              2,
             ),
             _metric(
               'UV INDEX',
               w.uv.toStringAsFixed(1),
               Icons.wb_sunny_outlined,
               '${_uvLabel(w.uv)} · pressure ${w.pressure.round()} hPa',
+              3,
             ),
           ],
         ),
-        const SizedBox(height: 22),
+        const SizedBox(height: 24),
         _sectionTitle(
           'This week',
           'Seven-day outlook',
           onTap: () => setState(() => _tab = 3),
-        ),
-        const SizedBox(height: 12),
+        ).animate().fadeIn(duration: 400.ms),
+        const SizedBox(height: 14),
         _weekPreview(w),
-        const SizedBox(height: 22),
+        const SizedBox(height: 24),
         _sectionTitle(
           'Air quality',
           'Live atmospheric readings',
           onTap: () => setState(() => _tab = 5),
-        ),
-        const SizedBox(height: 12),
+        ).animate().fadeIn(duration: 400.ms),
+        const SizedBox(height: 14),
         _airSummary(),
       ],
     );
   }
 
+  /// Calculates atmospheric color palette based on BackgroundScene (Sunrise, Sunset, Moonlight, Day)
+  List<Color> _skyColors(BackgroundScene scene, int code) {
+    final storm = code >= 95;
+    final rain = (code >= 51 && code <= 67) || (code >= 80 && code <= 82) || storm;
+    final snow = (code >= 71 && code <= 77) || code == 85 || code == 86;
+
+    if (storm) {
+      return [
+        const Color(0xff1f2833),
+        const Color(0xff394956),
+        const Color(0xff526472),
+      ];
+    }
+    if (rain) {
+      return [
+        const Color(0xff2c3e50),
+        const Color(0xff53717f),
+        const Color(0xff7895a0),
+      ];
+    }
+    if (snow) {
+      return [
+        const Color(0xff4b6584),
+        const Color(0xff778ca3),
+        const Color(0xffd1d8e0),
+      ];
+    }
+
+    return switch (scene) {
+      BackgroundScene.sunrise => [
+          const Color(0xff3f2b47), // Dawn twilight purple
+          const Color(0xffb84a5f), // Rich sunrise crimson
+          const Color(0xffe88358), // Warm golden orange
+          const Color(0xfffcd077), // Morning sunlight yellow
+        ],
+      BackgroundScene.sunset => [
+          const Color(0xff221b38), // Deep dusk violet
+          const Color(0xff572652), // Twilight magenta
+          const Color(0xffab4457), // Coral sunset horizon
+          const Color(0xffe07e53), // Warm golden twilight glow
+        ],
+      BackgroundScene.moonlight => [
+          const Color(0xff0d1b2a), // Midnight deep navy
+          const Color(0xff1b263b), // Luminous night blue
+          const Color(0xff415a77), // Soft moonlight horizon
+          const Color(0xff778da9), // Ambient night glow
+        ],
+    };
+  }
+
   Widget _hero(WeatherData w, bool wide) {
-    final night = _night;
+    final scene = _activeScene;
     final code = w.code;
     final storm = code >= 95,
         rain =
             (code >= 51 && code <= 67) || (code >= 80 && code <= 82) || storm,
-        snow = code >= 71 && code <= 77 || code == 85 || code == 86,
         cloudy = code == 2 || code == 3 || code == 45 || code == 48;
+
     final dt = DateFormat('EEEE, d MMMM · HH:mm').format(w.localTime);
     final sunrise = _clock(w.sunrise);
     final sunset = _clock(w.sunset);
-    final sky = night
-        ? [
-            const Color(0xff17283d),
-            const Color(0xff263951),
-            const Color(0xff48586a),
-          ]
-        : storm
-        ? [
-            const Color(0xff394956),
-            const Color(0xff526472),
-            const Color(0xff75828a),
-          ]
-        : rain
-        ? [
-            const Color(0xff53717f),
-            const Color(0xff7895a0),
-            const Color(0xff9cb2b7),
-          ]
-        : snow
-        ? [
-            const Color(0xff8caebd),
-            const Color(0xffbfd3d8),
-            const Color(0xffe3e7df),
-          ]
-        : cloudy
-        ? [
-            const Color(0xff6d9aaa),
-            const Color(0xff9cb9bf),
-            const Color(0xffc3c8be),
-          ]
-        : [
-            const Color(0xff77c4d8),
-            const Color(0xffacd8da),
-            const Color(0xffe4d7b3),
-          ];
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 900),
-      height: wide ? 335 : 365,
-      width: double.infinity,
-      padding: EdgeInsets.all(wide ? 34 : 24),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(28),
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: sky,
+
+    final sky = _skyColors(scene, code);
+
+    // Mouse Parallax factor calculation (-1.0 to 1.0)
+    final heroWidth = wide ? 900.0 : 400.0;
+    final heroHeight = wide ? 335.0 : 365.0;
+    final dx = _heroHovered
+        ? ((_heroMouse.dx / heroWidth) - 0.5).clamp(-0.5, 0.5)
+        : 0.0;
+    final dy = _heroHovered
+        ? ((_heroMouse.dy / heroHeight) - 0.5).clamp(-0.5, 0.5)
+        : 0.0;
+
+    return MouseRegion(
+      onEnter: (e) => setState(() {
+        _heroHovered = true;
+        _heroMouse = e.localPosition;
+      }),
+      onHover: (e) => setState(() => _heroMouse = e.localPosition),
+      onExit: (_) => setState(() {
+        _heroHovered = false;
+        _heroMouse = Offset.zero;
+      }),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 700),
+        curve: Curves.easeOutCubic,
+        height: wide ? 340 : 375,
+        width: double.infinity,
+        padding: EdgeInsets.all(wide ? 34 : 24),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(32),
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: sky,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: sky.first.withOpacity(0.35),
+              blurRadius: 32,
+              offset: const Offset(0, 14),
+              spreadRadius: 2,
+            ),
+          ],
         ),
-      ),
-      child: Stack(
-        clipBehavior: Clip.hardEdge,
-        children: [
-          Positioned(
-            right: wide ? 115 : 22,
-            top: night ? 42 : 25,
-            child: (rain || storm) && !night
-                ? const SizedBox(width: 126, height: 126)
-                : _celestial(night),
-          ),
-          Positioned(
-            left: wide ? 320 : 180,
-            top: wide ? 125 : 154,
-            child: _cloud(90, cloudy ? .52 : .25),
-          ),
-          Positioned(
-            right: wide ? 20 : 0,
-            top: 180,
-            child: _cloud(132, cloudy ? .68 : .36),
-          ),
-          if (rain && !night)
-            ...List.generate(
-              28,
-              (i) => Positioned(
-                left: (i * 31.0) % (wide ? 800 : 330),
-                top: 30 + (i * 47.0) % 230,
-                child: Transform.rotate(
-                  angle: -.25,
+        child: Stack(
+          clipBehavior: Clip.hardEdge,
+          children: [
+            // Stars effect for Moonlight/Night
+            if (scene == BackgroundScene.moonlight)
+              ...List.generate(
+                24,
+                (i) => Positioned(
+                  left: ((i * 47.0) + (dx * 15)) % (wide ? 850 : 340),
+                  top: ((i * 31.0) + (dy * 12)) % 220,
                   child: Container(
-                    width: 1.5,
-                    height: 8,
+                    width: (i % 3 == 0) ? 3.0 : 2.0,
+                    height: (i % 3 == 0) ? 3.0 : 2.0,
                     decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(.34),
-                      borderRadius: BorderRadius.circular(4),
+                      color: Colors.white.withOpacity(0.75),
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.white.withOpacity(0.8),
+                          blurRadius: 4,
+                        ),
+                      ],
+                    ),
+                  ).animate(
+                    onPlay: (controller) => controller.repeat(reverse: true),
+                  ).fadeIn(
+                    duration: Duration(milliseconds: 800 + (i * 120)),
+                  ),
+                ),
+              ),
+
+            // Celestial Sun / Moon Body with Parallax Shift
+            AnimatedPositioned(
+              duration: const Duration(milliseconds: 120),
+              curve: Curves.easeOut,
+              right: (wide ? 115.0 : 20.0) - (dx * 28),
+              top: (scene == BackgroundScene.moonlight ? 36.0 : 25.0) - (dy * 20),
+              child: _celestialBody(scene),
+            ),
+
+            // Cloud Layer 1 (Parallax layer)
+            AnimatedPositioned(
+              duration: const Duration(milliseconds: 120),
+              curve: Curves.easeOut,
+              left: (wide ? 320.0 : 170.0) + (dx * 22),
+              top: (wide ? 125.0 : 154.0) + (dy * 14),
+              child: _cloud(94, cloudy ? .58 : .30),
+            ),
+
+            // Cloud Layer 2 (Parallax layer)
+            AnimatedPositioned(
+              duration: const Duration(milliseconds: 120),
+              curve: Curves.easeOut,
+              right: (wide ? 30.0 : 10.0) + (dx * 35),
+              top: 175.0 + (dy * 22),
+              child: _cloud(135, cloudy ? .72 : .42),
+            ),
+
+            // Rain drops animation
+            if (rain)
+              ...List.generate(
+                32,
+                (i) => Positioned(
+                  left: (i * 28.0) % (wide ? 850 : 340),
+                  top: (30 + (i * 37.0)) % 260,
+                  child: Transform.rotate(
+                    angle: -.25,
+                    child: Container(
+                      width: 1.8,
+                      height: 10,
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(.45),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
-          if (night)
-            ...List.generate(
-              18,
-              (i) => Positioned(
-                left: (i * 73.0) % (wide ? 800 : 330),
-                top: (i * 37.0) % 180,
-                child: Container(
-                  width: 2,
-                  height: 2,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(.75),
-                    shape: BoxShape.circle,
-                  ),
-                ),
-              ),
-            ),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Row(
+
+            // Text & Controls Content Layer (Subtle Counter-Parallax)
+            AnimatedPositioned(
+              duration: const Duration(milliseconds: 100),
+              curve: Curves.easeOut,
+              left: dx * 6,
+              top: dy * 6,
+              right: -dx * 6,
+              bottom: -dy * 6,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Icon(
-                    Icons.location_on_outlined,
-                    size: 16,
-                    color: Colors.white,
-                  ),
-                  const SizedBox(width: 4),
-                  Flexible(
-                    child: Text(
-                      _place.label,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 15,
-                      ),
-                    ),
-                  ),
-                  const Spacer(),
-                  _tag('LIVE', Colors.white),
-                  PopupMenuButton<String>(
-                    tooltip: 'Sky preview',
-                    icon: const Icon(Icons.more_horiz, color: Colors.white),
-                    onSelected: (v) => setState(() {
-                      _manualPreview = v != 'auto';
-                      _previewNight = v == 'night';
-                    }),
-                    itemBuilder: (_) => const [
-                      PopupMenuItem(
-                        value: 'auto',
-                        child: Text('Automatic sky'),
-                      ),
-                      PopupMenuItem(
-                        value: 'day',
-                        child: Text('Preview daytime'),
-                      ),
-                      PopupMenuItem(
-                        value: 'night',
-                        child: Text('Preview nighttime'),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-              const Spacer(),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                  Row(
                     children: [
-                      Text(
-                        _temp(w.temp),
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: wide ? 78 : 72,
-                          fontWeight: FontWeight.w300,
-                          height: 1,
-                          letterSpacing: -5,
+                      const Icon(
+                        Icons.location_on_outlined,
+                        size: 18,
+                        color: Colors.white,
+                      ),
+                      const SizedBox(width: 6),
+                      Flexible(
+                        child: Text(
+                          _place.label,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w800,
+                            fontSize: 16,
+                            shadows: [
+                              Shadow(color: Colors.black26, blurRadius: 8),
+                            ],
+                          ),
                         ),
                       ),
-                      const SizedBox(height: 6),
-                      Text(
-                        w.description,
-                        style: const TextStyle(
+                      const Spacer(),
+                      _tag(scene.displayName.toUpperCase(), Colors.white),
+                      const SizedBox(width: 6),
+                      PopupMenuButton<BackgroundMode>(
+                        tooltip: 'Atmospheric scene',
+                        icon: const Icon(
+                          Icons.wb_twilight_rounded,
                           color: Colors.white,
-                          fontSize: 18,
-                          fontWeight: FontWeight.w600,
                         ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Feels like ${_temp(w.feels)}  ·  H:${_temp(w.high)}  L:${_temp(w.low)}',
-                        style: TextStyle(
-                          color: Colors.white.withOpacity(.85),
-                          fontSize: 12,
-                        ),
+                        onSelected: (mode) => setState(() {
+                          _bgMode = mode;
+                          _persist();
+                        }),
+                        itemBuilder: (_) => BackgroundMode.values
+                            .map(
+                              (m) => PopupMenuItem(
+                                value: m,
+                                child: Row(
+                                  children: [
+                                    Icon(
+                                      _sceneModeIcon(m),
+                                      size: 18,
+                                      color: _bgMode == m ? sea : ink,
+                                    ),
+                                    const SizedBox(width: 10),
+                                    Text(
+                                      m.label,
+                                      style: TextStyle(
+                                        fontWeight: _bgMode == m
+                                            ? FontWeight.bold
+                                            : FontWeight.normal,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            )
+                            .toList(),
                       ),
                     ],
                   ),
                   const Spacer(),
-                  if (wide)
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            _temp(w.temp),
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: wide ? 82 : 74,
+                              fontWeight: FontWeight.w300,
+                              height: 1,
+                              letterSpacing: -5,
+                              shadows: const [
+                                Shadow(color: Colors.black26, blurRadius: 12),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            w.description,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 19,
+                              fontWeight: FontWeight.w700,
+                              shadows: [
+                                Shadow(color: Colors.black26, blurRadius: 8),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Feels like ${_temp(w.feels)}  ·  H:${_temp(w.high)}  L:${_temp(w.low)}',
+                            style: TextStyle(
+                              color: Colors.white.withOpacity(.90),
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const Spacer(),
+                      if (wide)
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Text(
+                              dt,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Sunrise $sunrise    Sunset $sunset',
+                              style: TextStyle(
+                                color: Colors.white.withOpacity(.88),
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                    ],
+                  ),
+                  if (!wide)
+                    Row(
                       children: [
+                        const Icon(
+                          Icons.schedule,
+                          size: 14,
+                          color: Colors.white,
+                        ),
+                        const SizedBox(width: 6),
                         Text(
                           dt,
                           style: const TextStyle(
                             color: Colors.white,
-                            fontSize: 13,
+                            fontSize: 12,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
-                        const SizedBox(height: 8),
+                        const Spacer(),
                         Text(
-                          'Sunrise $sunrise    Sunset $sunset',
-                          style: TextStyle(
-                            color: Colors.white.withOpacity(.82),
+                          '↑ $sunrise  ·  ↓ $sunset',
+                          style: const TextStyle(
+                            color: Colors.white,
                             fontSize: 12,
+                            fontWeight: FontWeight.w600,
                           ),
                         ),
                       ],
                     ),
                 ],
               ),
-              if (!wide)
-                Row(
-                  children: [
-                    const Icon(Icons.schedule, size: 14, color: Colors.white),
-                    const SizedBox(width: 6),
-                    Text(
-                      dt,
-                      style: const TextStyle(color: Colors.white, fontSize: 11),
-                    ),
-                    const Spacer(),
-                    Text(
-                      '↑ $sunrise  ·  ↓ $sunset',
-                      style: const TextStyle(color: Colors.white, fontSize: 11),
-                    ),
-                  ],
-                ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _celestial(bool night) => Container(
-    width: night ? 104 : 126,
-    height: night ? 104 : 126,
-    decoration: BoxDecoration(
-      shape: BoxShape.circle,
-      color: night ? const Color(0xffdce7ed) : const Color(0xffffe39a),
-      boxShadow: [
-        BoxShadow(
-          color: (night ? const Color(0xffe8efff) : const Color(0xffffe9a5))
-              .withOpacity(.5),
-          blurRadius: 58,
-          spreadRadius: 22,
-        ),
-      ],
-    ),
-    child: night
-        ? const Icon(Icons.nightlight_round, color: Color(0xff8292a2), size: 59)
-        : null,
-  );
-  Widget _cloud(double size, double opacity) => Icon(
-    Icons.cloud_rounded,
-    size: size,
-    color: Colors.white.withOpacity(opacity),
-  );
-  Widget _tag(String s, Color c) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-    decoration: BoxDecoration(
-      color: Colors.white.withOpacity(.18),
-      borderRadius: BorderRadius.circular(20),
-    ),
-    child: Text(
-      s,
-      style: TextStyle(
-        color: c,
-        fontSize: 9,
-        fontWeight: FontWeight.w800,
-        letterSpacing: 1.4,
-      ),
-    ),
-  );
-  Widget _sectionTitle(String title, String sub, {VoidCallback? onTap}) => Row(
-    children: [
-      Expanded(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              title,
-              style: const TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.w800,
-                color: ink,
-                letterSpacing: -.5,
-              ),
             ),
-            Text(sub, style: const TextStyle(color: muted, fontSize: 12)),
           ],
         ),
       ),
-      if (onTap != null)
-        TextButton(onPressed: onTap, child: const Text('View all')),
-    ],
-  );
-  Widget _hourStrip(WeatherData w) => Container(
-    height: 142,
-    padding: const EdgeInsets.symmetric(vertical: 14),
-    decoration: _cardDecoration(),
-    child: ListView.separated(
-      scrollDirection: Axis.horizontal,
-      itemCount: 24,
-      separatorBuilder: (_, __) =>
-          const VerticalDivider(width: 1, color: Color(0xffedf0f1)),
-      itemBuilder: (c, i) {
-        final h = w.hourly;
-        final temps = (h['temperature_2m'] as List? ?? []);
-        final codes = (h['weather_code'] as List? ?? []);
-        final times = (h['time'] as List? ?? []);
-        final probs = (h['precipitation_probability'] as List? ?? []);
-        final winds = (h['wind_speed_10m'] as List? ?? []);
-        final start = (times.indexWhere(
-          (x) =>
-              DateTime.tryParse('$x')
-                  ?.isAfter(w.localTime.subtract(const Duration(hours: 1))) ??
-              false,
-        )).clamp(0, math.max(temps.length - 1, 0)).toInt();
-        final n = start + i;
-        if (n >= temps.length) return const SizedBox.shrink();
-        final time = DateTime.tryParse('${times[n]}') ?? w.localTime;
-        return SizedBox(
-          width: 66,
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: [
-              Text(
-                i == 0 ? 'Now' : DateFormat('ha').format(time),
-                style: const TextStyle(color: muted, fontSize: 11),
-              ),
-              Icon(
-                weatherIcon(n < codes.length ? (codes[n] as num).toInt() : 0),
-                size: 20,
-                color: sea,
-              ),
-              Text(
-                _temp(temps[n] as num),
-                style: const TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w800,
-                  color: ink,
-                ),
-              ),
-              Text(
-                '${n < probs.length ? probs[n] : 0}% · ${(n < winds.length ? (winds[n] as num).round() : 0)} km/h',
-                style: const TextStyle(fontSize: 8, color: muted),
+    ).animate().fadeIn(duration: 600.ms).slideY(begin: -0.05);
+  }
+
+  IconData _sceneModeIcon(BackgroundMode m) => switch (m) {
+        BackgroundMode.automatic => Icons.auto_awesome_rounded,
+        BackgroundMode.sunrise => Icons.wb_twilight_rounded,
+        BackgroundMode.sunset => Icons.wb_sunny_rounded,
+        BackgroundMode.moonlight => Icons.nightlight_round,
+      };
+
+  /// Celestial Sun / Moon body with custom glow aura according to scene
+  Widget _celestialBody(BackgroundScene scene) {
+    return switch (scene) {
+      BackgroundScene.sunrise => Container(
+          width: 128,
+          height: 128,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: const RadialGradient(
+              colors: [Color(0xfffff4cc), Color(0xffffba66)],
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xffffd166).withOpacity(.65),
+                blurRadius: 64,
+                spreadRadius: 28,
               ),
             ],
           ),
-        );
-      },
-    ),
-  );
-  BoxDecoration _cardDecoration() => BoxDecoration(
-    color: Colors.white,
-    borderRadius: BorderRadius.circular(20),
-    border: Border.all(color: const Color(0xffedf0f1)),
-  );
-  Widget _metric(String label, String value, IconData icon, String foot) =>
-      Container(
-        padding: const EdgeInsets.all(16),
-        decoration: _cardDecoration(),
+        ).animate(onPlay: (c) => c.repeat(reverse: true)).scale(
+            begin: const Offset(1, 1),
+            end: const Offset(1.06, 1.06),
+            duration: 2500.ms,
+            curve: Curves.easeInOut,
+          ),
+      BackgroundScene.sunset => Container(
+          width: 128,
+          height: 128,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: const RadialGradient(
+              colors: [Color(0xffffe6b3), Color(0xffff6b6b)],
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xffff85a2).withOpacity(.60),
+                blurRadius: 64,
+                spreadRadius: 26,
+              ),
+            ],
+          ),
+        ).animate(onPlay: (c) => c.repeat(reverse: true)).scale(
+            begin: const Offset(1, 1),
+            end: const Offset(1.05, 1.05),
+            duration: 2200.ms,
+            curve: Curves.easeInOut,
+          ),
+      BackgroundScene.moonlight => Container(
+          width: 110,
+          height: 110,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: const RadialGradient(
+              colors: [Color(0xfff8f9fa), Color(0xffd8e2dc)],
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xffe8efff).withOpacity(.65),
+                blurRadius: 58,
+                spreadRadius: 24,
+              ),
+            ],
+          ),
+          child: const Icon(
+            Icons.nightlight_round,
+            color: Color(0xff748899),
+            size: 64,
+          ),
+        ).animate(onPlay: (c) => c.repeat(reverse: true)).scale(
+            begin: const Offset(1, 1),
+            end: const Offset(1.04, 1.04),
+            duration: 2800.ms,
+            curve: Curves.easeInOut,
+          ),
+    };
+  }
+
+  Widget _cloud(double size, double opacity) => Icon(
+        Icons.cloud_rounded,
+        size: size,
+        color: Colors.white.withOpacity(opacity),
+      );
+
+  Widget _tag(String s, Color c) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(.22),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: Colors.white.withOpacity(.25)),
+        ),
+        child: Text(
+          s,
+          style: TextStyle(
+            color: c,
+            fontSize: 9,
+            fontWeight: FontWeight.w900,
+            letterSpacing: 1.5,
+          ),
+        ),
+      );
+
+  Widget _sectionTitle(String title, String sub, {VoidCallback? onTap}) => Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 21,
+                    fontWeight: FontWeight.w900,
+                    color: ink,
+                    letterSpacing: -.5,
+                  ),
+                ),
+                Text(
+                  sub,
+                  style: const TextStyle(
+                    color: muted,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (onTap != null)
+            TextButton(
+              onPressed: onTap,
+              style: TextButton.styleFrom(foregroundColor: sea),
+              child: const Text(
+                'View all',
+                style: TextStyle(fontWeight: FontWeight.w700),
+              ),
+            ),
+        ],
+      );
+
+  Widget _hourStrip(WeatherData w) => Container(
+        height: 145,
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(color: const Color(0xffedf0f1)),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x0a101922),
+              blurRadius: 18,
+              offset: Offset(0, 6),
+            ),
+          ],
+        ),
+        child: ListView.separated(
+          physics: const BouncingScrollPhysics(),
+          scrollDirection: Axis.horizontal,
+          itemCount: 24,
+          separatorBuilder: (context, index) =>
+              const VerticalDivider(width: 1, color: Color(0xffedf0f1)),
+          itemBuilder: (c, i) {
+            final h = w.hourly;
+            final temps = (h['temperature_2m'] as List? ?? []);
+            final codes = (h['weather_code'] as List? ?? []);
+            final times = (h['time'] as List? ?? []);
+            final probs = (h['precipitation_probability'] as List? ?? []);
+            final winds = (h['wind_speed_10m'] as List? ?? []);
+            final start = (times.indexWhere(
+              (x) =>
+                  DateTime.tryParse('$x')?.isAfter(
+                    w.localTime.subtract(const Duration(hours: 1)),
+                  ) ??
+                  false,
+            )).clamp(0, math.max(temps.length - 1, 0)).toInt();
+            final n = start + i;
+            if (n >= temps.length) return const SizedBox.shrink();
+            final time = DateTime.tryParse('${times[n]}') ?? w.localTime;
+            return HoverCard(
+              enableTilt: false,
+              borderRadius: 14,
+              decoration: const BoxDecoration(color: Colors.transparent),
+              child: SizedBox(
+                width: 68,
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: [
+                    Text(
+                      i == 0 ? 'Now' : DateFormat('ha').format(time),
+                      style: const TextStyle(
+                        color: muted,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    Icon(
+                      weatherIcon(
+                        n < codes.length ? (codes[n] as num).toInt() : 0,
+                      ),
+                      size: 22,
+                      color: sea,
+                    ),
+                    Text(
+                      _temp(temps[n] as num),
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                        color: ink,
+                      ),
+                    ),
+                    Text(
+                      '${n < probs.length ? probs[n] : 0}% · ${(n < winds.length ? (winds[n] as num).round() : 0)} km/h',
+                      style: const TextStyle(
+                        fontSize: 8.5,
+                        color: muted,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      );
+
+  Widget _metric(
+    String label,
+    String value,
+    IconData icon,
+    String foot,
+    int index,
+  ) =>
+      HoverCard(
+        depth: 1.2,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
               children: [
-                Icon(icon, size: 16, color: sea),
-                const SizedBox(width: 7),
+                Icon(icon, size: 18, color: sea),
+                const SizedBox(width: 8),
                 Text(
                   label,
                   style: const TextStyle(
-                    fontSize: 9,
-                    letterSpacing: 1.2,
-                    fontWeight: FontWeight.w800,
+                    fontSize: 9.5,
+                    letterSpacing: 1.3,
+                    fontWeight: FontWeight.w900,
                     color: muted,
                   ),
                 ),
@@ -1177,20 +1782,29 @@ class _WeatherShellState extends State<WeatherShell> {
             Text(
               value,
               style: const TextStyle(
-                fontSize: 24,
-                fontWeight: FontWeight.w800,
+                fontSize: 26,
+                fontWeight: FontWeight.w900,
                 color: ink,
                 letterSpacing: -1,
               ),
             ),
+            const SizedBox(height: 2),
             Text(
               foot,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 10, color: muted),
+              style: const TextStyle(
+                fontSize: 10.5,
+                color: muted,
+                fontWeight: FontWeight.w500,
+              ),
             ),
           ],
         ),
-      );
+      ).animate().fadeIn(
+            delay: Duration(milliseconds: 80 * index),
+            duration: 400.ms,
+          ).scale(begin: const Offset(0.95, 0.95));
+
   String _compass(int b) {
     const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
     return dirs[((b + 22.5) / 45).floor() % 8];
@@ -1199,14 +1813,23 @@ class _WeatherShellState extends State<WeatherShell> {
   String _uvLabel(double n) => n < 3
       ? 'Low'
       : n < 6
-      ? 'Moderate'
-      : n < 8
-      ? 'High'
-      : n < 11
-      ? 'Very high'
-      : 'Extreme';
-  Widget _weekPreview(WeatherData w) =>
-      Column(children: List.generate(7, (i) => _dayRow(w, i, compact: true)));
+          ? 'Moderate'
+          : n < 8
+              ? 'High'
+              : n < 11
+                  ? 'Very high'
+                  : 'Extreme';
+
+  Widget _weekPreview(WeatherData w) => Column(
+        children: List.generate(
+          7,
+          (i) => _dayRow(w, i, compact: true).animate().fadeIn(
+                delay: Duration(milliseconds: 50 * i),
+                duration: 350.ms,
+              ),
+        ),
+      );
+
   Widget _dayRow(WeatherData w, int i, {bool compact = false}) {
     final d = w.daily;
     final times = (d['time'] as List? ?? []),
@@ -1218,68 +1841,79 @@ class _WeatherShellState extends State<WeatherShell> {
         uvs = (d['uv_index_max'] as List? ?? []);
     if (i >= times.length) return const SizedBox.shrink();
     final date = DateTime.tryParse('${times[i]}') ?? DateTime.now();
-    return Container(
+    return HoverCard(
       margin: const EdgeInsets.only(bottom: 8),
       padding: EdgeInsets.symmetric(
-        horizontal: 16,
-        vertical: compact ? 10 : 14,
+        horizontal: 18,
+        vertical: compact ? 12 : 16,
       ),
-      decoration: _cardDecoration(),
       child: Row(
         children: [
           SizedBox(
-            width: 82,
+            width: 86,
             child: Text(
-              i == 0 ? 'Today' : DateFormat('EEE').format(date),
+              i == 0 ? 'Today' : DateFormat('EEE, d MMM').format(date),
               style: const TextStyle(
-                fontWeight: FontWeight.w700,
-                fontSize: 12,
+                fontWeight: FontWeight.w800,
+                fontSize: 13,
                 color: ink,
               ),
             ),
           ),
-          Icon(weatherIcon((codes[i] as num).toInt()), color: sea, size: 20),
-          const SizedBox(width: 10),
+          Icon(weatherIcon((codes[i] as num).toInt()), color: sea, size: 22),
+          const SizedBox(width: 12),
           if (!compact)
             Expanded(
               child: Text(
                 weatherText((codes[i] as num).toInt()),
-                style: const TextStyle(color: muted, fontSize: 12),
+                style: const TextStyle(
+                  color: muted,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
           if (compact) const Spacer(),
           Text(
             '${rains.isNotEmpty ? rains[i] : 0}%',
-            style: const TextStyle(color: muted, fontSize: 11),
+            style: const TextStyle(
+              color: muted,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
           ),
-          const SizedBox(width: 20),
+          const SizedBox(width: 22),
           Text(
             '${(mins[i] as num).round()}°',
-            style: const TextStyle(color: muted, fontSize: 12),
+            style: const TextStyle(
+              color: muted,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+            ),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 14),
           SizedBox(
-            width: 52,
+            width: 54,
             child: Text(
               '${(maxs[i] as num).round()}°',
               textAlign: TextAlign.right,
               style: const TextStyle(
-                fontWeight: FontWeight.w800,
+                fontWeight: FontWeight.w900,
                 color: ink,
-                fontSize: 13,
+                fontSize: 14,
               ),
             ),
           ),
           if (!compact) ...[
-            const SizedBox(width: 18),
+            const SizedBox(width: 20),
             Text(
               '${(winds[i] as num).round()} km/h',
-              style: const TextStyle(fontSize: 11, color: muted),
+              style: const TextStyle(fontSize: 12, color: muted),
             ),
-            const SizedBox(width: 18),
+            const SizedBox(width: 20),
             Text(
               'UV ${(uvs[i] as num).toStringAsFixed(0)}',
-              style: const TextStyle(fontSize: 11, color: muted),
+              style: const TextStyle(fontSize: 12, color: muted),
             ),
           ],
         ],
@@ -1295,25 +1929,35 @@ class _WeatherShellState extends State<WeatherShell> {
     final start = times
         .indexWhere(
           (x) =>
-              DateTime.tryParse('$x')
-                  ?.isAfter(w.localTime.subtract(const Duration(hours: 1))) ??
+              DateTime.tryParse('$x')?.isAfter(
+                w.localTime.subtract(const Duration(hours: 1)),
+              ) ??
               false,
         )
         .clamp(0, math.max(times.length - 1, 0))
         .toInt();
     final pts = <FlSpot>[];
-    for (var i = 0; i < 24 && start + i < temps.length; i++)
+    for (var i = 0; i < 24 && start + i < temps.length; i++) {
       pts.add(FlSpot(i.toDouble(), (temps[start + i] as num).toDouble()));
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _sectionTitle('Hourly forecast', 'The next 24 hours in ${_place.name}'),
+        _sectionTitle('Hourly forecast', 'The next 24 hours in ${_place.name}')
+            .animate()
+            .fadeIn(),
         const SizedBox(height: 18),
-        _chart(pts, 'TEMPERATURE', height: 220),
+        _chart(pts, 'TEMPERATURE', height: 220).animate().fadeIn(duration: 450.ms),
         const SizedBox(height: 20),
-        _hourStrip(w),
+        _hourStrip(w).animate().fadeIn(delay: 100.ms),
         const SizedBox(height: 20),
-        ...List.generate(24, (i) => _hourRow(w, start + i, i)),
+        ...List.generate(
+          24,
+          (i) => _hourRow(w, start + i, i).animate().fadeIn(
+                delay: Duration(milliseconds: 30 * i),
+                duration: 300.ms,
+              ),
+        ),
       ],
     );
   }
@@ -1328,48 +1972,55 @@ class _WeatherShellState extends State<WeatherShell> {
         winds = h['wind_speed_10m'] as List? ?? [];
     if (n >= times.length) return const SizedBox.shrink();
     final t = DateTime.tryParse('${times[n]}') ?? w.localTime;
-    return Container(
+    return HoverCard(
       margin: const EdgeInsets.only(bottom: 6),
-      padding: const EdgeInsets.all(14),
-      decoration: _cardDecoration(),
+      padding: const EdgeInsets.all(16),
       child: Row(
         children: [
           SizedBox(
-            width: 52,
+            width: 56,
             child: Text(
               i == 0 ? 'Now' : DateFormat('ha').format(t),
-              style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
+              style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
             ),
           ),
-          Icon(weatherIcon((codes[n] as num).toInt()), color: sea, size: 20),
-          const SizedBox(width: 10),
+          Icon(weatherIcon((codes[n] as num).toInt()), color: sea, size: 22),
+          const SizedBox(width: 12),
           Expanded(
             child: Text(
               weatherText((codes[n] as num).toInt()),
-              style: const TextStyle(color: muted, fontSize: 12),
+              style: const TextStyle(
+                color: muted,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ),
           Text(
             '${probs[n]}%',
-            style: const TextStyle(color: muted, fontSize: 11),
+            style: const TextStyle(
+              color: muted,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
           ),
-          const SizedBox(width: 14),
+          const SizedBox(width: 16),
           Text(
             '${(rains[n] as num).toStringAsFixed(1)} mm',
-            style: const TextStyle(color: muted, fontSize: 11),
+            style: const TextStyle(color: muted, fontSize: 12),
           ),
-          const SizedBox(width: 14),
+          const SizedBox(width: 16),
           Text(
             '${(winds[n] as num).round()} km/h',
-            style: const TextStyle(color: muted, fontSize: 11),
+            style: const TextStyle(color: muted, fontSize: 12),
           ),
-          const SizedBox(width: 14),
+          const SizedBox(width: 16),
           Text(
             _temp(temps[n] as num),
             style: const TextStyle(
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w900,
               color: ink,
-              fontSize: 14,
+              fontSize: 15,
             ),
           ),
         ],
@@ -1388,92 +2039,119 @@ class _WeatherShellState extends State<WeatherShell> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _sectionTitle('7-day forecast', 'A week of weather, at a glance'),
+        _sectionTitle('7-day forecast', 'A week of weather, at a glance')
+            .animate()
+            .fadeIn(),
         const SizedBox(height: 18),
-        _chart(pts, 'DAILY HIGH', height: 210),
+        _chart(pts, 'DAILY HIGH', height: 210).animate().fadeIn(duration: 450.ms),
         const SizedBox(height: 18),
-        ...List.generate(7, (i) => _dayRow(w, i)),
+        ...List.generate(
+          7,
+          (i) => _dayRow(w, i).animate().fadeIn(
+                delay: Duration(milliseconds: 50 * i),
+                duration: 350.ms,
+              ),
+        ),
       ],
     );
   }
 
   Widget _chart(List<FlSpot> points, String label, {double height = 200}) =>
-      Container(
-        height: height + 28,
-        padding: const EdgeInsets.fromLTRB(14, 14, 18, 6),
-        decoration: _cardDecoration(),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              label,
-              style: const TextStyle(
-                fontSize: 9,
-                letterSpacing: 1.2,
-                color: muted,
-                fontWeight: FontWeight.w800,
+      HoverCard(
+        enableTilt: false,
+        padding: const EdgeInsets.fromLTRB(16, 16, 20, 8),
+        child: SizedBox(
+          height: height + 28,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: const TextStyle(
+                  fontSize: 9.5,
+                  letterSpacing: 1.3,
+                  color: muted,
+                  fontWeight: FontWeight.w900,
+                ),
               ),
-            ),
-            const SizedBox(height: 6),
-            Expanded(
-              child: LineChart(
-                LineChartData(
-                  minX: 0,
-                  maxX: math.max(points.length - 1, 1).toDouble(),
-                  gridData: FlGridData(
-                    show: true,
-                    drawVerticalLine: false,
-                    getDrawingHorizontalLine: (_) =>
-                        FlLine(color: const Color(0xffedf0f1), strokeWidth: 1),
-                  ),
-                  titlesData: FlTitlesData(
-                    leftTitles: const AxisTitles(
-                      sideTitles: SideTitles(showTitles: false),
+              const SizedBox(height: 8),
+              Expanded(
+                child: LineChart(
+                  LineChartData(
+                    minX: 0,
+                    maxX: math.max(points.length - 1, 1).toDouble(),
+                    gridData: FlGridData(
+                      show: true,
+                      drawVerticalLine: false,
+                      getDrawingHorizontalLine: (_) => FlLine(
+                        color: const Color(0xffedf0f1),
+                        strokeWidth: 1,
+                      ),
                     ),
-                    rightTitles: const AxisTitles(
-                      sideTitles: SideTitles(showTitles: false),
-                    ),
-                    topTitles: const AxisTitles(
-                      sideTitles: SideTitles(showTitles: false),
-                    ),
-                    bottomTitles: AxisTitles(
-                      sideTitles: SideTitles(
-                        showTitles: true,
-                        reservedSize: 20,
-                        interval: math.max(
-                          (points.length / 6).floorToDouble(),
-                          1,
-                        ),
-                        getTitlesWidget: (value, meta) => Padding(
-                          padding: const EdgeInsets.only(top: 5),
-                          child: Text(
-                            '${value.toInt()}',
-                            style: const TextStyle(color: muted, fontSize: 9),
+                    titlesData: FlTitlesData(
+                      leftTitles: const AxisTitles(
+                        sideTitles: SideTitles(showTitles: false),
+                      ),
+                      rightTitles: const AxisTitles(
+                        sideTitles: SideTitles(showTitles: false),
+                      ),
+                      topTitles: const AxisTitles(
+                        sideTitles: SideTitles(showTitles: false),
+                      ),
+                      bottomTitles: AxisTitles(
+                        sideTitles: SideTitles(
+                          showTitles: true,
+                          reservedSize: 22,
+                          interval: math.max(
+                            (points.length / 6).floorToDouble(),
+                            1,
+                          ),
+                          getTitlesWidget: (value, meta) => Padding(
+                            padding: const EdgeInsets.only(top: 5),
+                            child: Text(
+                              '${value.toInt()}',
+                              style: const TextStyle(
+                                color: muted,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
                           ),
                         ),
                       ),
                     ),
-                  ),
-                  borderData: FlBorderData(show: false),
-                  lineBarsData: [
-                    LineChartBarData(
-                      spots: points,
-                      isCurved: true,
-                      color: sea,
-                      barWidth: 2.5,
-                      dotData: FlDotData(show: false),
-                      belowBarData: BarAreaData(
-                        show: true,
-                        color: sea.withValues(alpha: .10),
+                    borderData: FlBorderData(show: false),
+                    lineBarsData: [
+                      LineChartBarData(
+                        spots: points,
+                        isCurved: true,
+                        color: sea,
+                        barWidth: 3,
+                        isStrokeCapRound: true,
+                        dotData: FlDotData(
+                          show: true,
+                          getDotPainter: (spot, percent, barData, index) =>
+                              FlDotCirclePainter(
+                            radius: 4,
+                            color: Colors.white,
+                            strokeWidth: 2.5,
+                            strokeColor: sea,
+                          ),
+                        ),
+                        belowBarData: BarAreaData(
+                          show: true,
+                          color: sea.withOpacity(.12),
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       );
+
   Widget _windPage() {
     final w = _weather;
     if (w == null) return const SizedBox.shrink();
@@ -1486,111 +2164,128 @@ class _WeatherShellState extends State<WeatherShell> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _sectionTitle('Wind intelligence', 'Wind conditions in ${_place.name}'),
+        _sectionTitle('Wind intelligence', 'Wind conditions in ${_place.name}')
+            .animate()
+            .fadeIn(),
         const SizedBox(height: 18),
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(24),
-          decoration: _cardDecoration(),
-          child: Column(
-            children: [
-              Transform.rotate(
-                angle: w.bearing * math.pi / 180,
-                child: const Icon(
-                  Icons.navigation_rounded,
-                  size: 84,
-                  color: sea,
+        HoverCard(
+          padding: const EdgeInsets.all(28),
+          child: SizedBox(
+            width: double.infinity,
+            child: Column(
+              children: [
+                AnimatedRotation(
+                  turns: w.bearing / 360.0,
+                  duration: const Duration(milliseconds: 1000),
+                  curve: Curves.easeOutBack,
+                  child: const Icon(
+                    Icons.navigation_rounded,
+                    size: 92,
+                    color: sea,
+                  ),
+                ).animate().scale(duration: 500.ms, curve: Curves.elasticOut),
+                const SizedBox(height: 10),
+                Text(
+                  '${w.wind.round()} km/h',
+                  style: const TextStyle(
+                    fontSize: 40,
+                    fontWeight: FontWeight.w900,
+                    color: ink,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                '${w.wind.round()} km/h',
-                style: const TextStyle(
-                  fontSize: 36,
-                  fontWeight: FontWeight.w800,
-                  color: ink,
+                Text(
+                  '${_compass(w.bearing)} · ${w.bearing}° bearing',
+                  style: const TextStyle(
+                    color: muted,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
-              ),
-              Text(
-                '${_compass(w.bearing)} · ${w.bearing}° bearing',
-                style: const TextStyle(color: muted),
-              ),
-              const SizedBox(height: 20),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  _smallStat('GUSTS', '${w.gust.round()} km/h'),
-                  _smallStat('BEAUFORT', '$beau / 12'),
-                  _smallStat('DIRECTION', _compass(w.bearing)),
-                ],
-              ),
-            ],
+                const SizedBox(height: 24),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    _smallStat('GUSTS', '${w.gust.round()} km/h'),
+                    _smallStat('BEAUFORT', '$beau / 12'),
+                    _smallStat('DIRECTION', _compass(w.bearing)),
+                  ],
+                ),
+              ],
+            ),
           ),
-        ),
-        const SizedBox(height: 18),
+        ).animate().fadeIn(duration: 450.ms),
+        const SizedBox(height: 20),
         _chart(pts, 'HOURLY WIND SPEED · KM/H', height: 210),
-        const SizedBox(height: 16),
+        const SizedBox(height: 20),
         _sectionTitle('Hourly wind', 'Forecast wind speed'),
-        const SizedBox(height: 12),
+        const SizedBox(height: 14),
         _hourStrip(w),
       ],
     );
   }
 
   Widget _smallStat(String label, String val) => Column(
-    children: [
-      Text(
-        label,
-        style: const TextStyle(color: muted, fontSize: 9, letterSpacing: 1),
-      ),
-      const SizedBox(height: 6),
-      Text(
-        val,
-        style: const TextStyle(
-          color: ink,
-          fontSize: 14,
-          fontWeight: FontWeight.w800,
-        ),
-      ),
-    ],
-  );
-  Widget _airSummary() {
-    if (_airLoading)
-      return Container(
-        height: 90,
-        decoration: _cardDecoration(),
-        child: const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              color: muted,
+              fontSize: 9.5,
+              letterSpacing: 1.2,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            val,
+            style: const TextStyle(
+              color: ink,
+              fontSize: 16,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+        ],
       );
-    if (_air == null)
-      return Container(
-        padding: const EdgeInsets.all(18),
-        decoration: _cardDecoration(),
+
+  Widget _airSummary() {
+    if (_airLoading) {
+      return HoverCard(
+        padding: const EdgeInsets.all(24),
+        child: const SizedBox(
+          height: 60,
+          child: Center(child: CircularProgressIndicator(strokeWidth: 2.5)),
+        ),
+      );
+    }
+    if (_air == null) {
+      return HoverCard(
+        padding: const EdgeInsets.all(20),
         child: const Text(
           'Air quality readings are currently unavailable for this location.',
-          style: TextStyle(color: muted),
+          style: TextStyle(color: muted, fontWeight: FontWeight.w500),
         ),
       );
+    }
     final a = _air!;
     final aqi = (a['european_aqi'] as num?)?.round();
     final color = aqi == null
         ? muted
         : aqi < 21
-        ? const Color(0xff3e9b75)
-        : aqi < 41
-        ? const Color(0xff98a847)
-        : aqi < 61
-        ? const Color(0xffdc9e3d)
-        : const Color(0xffcc675a);
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: _cardDecoration(),
+            ? const Color(0xff3e9b75)
+            : aqi < 41
+                ? const Color(0xff98a847)
+                : aqi < 61
+                    ? const Color(0xffdc9e3d)
+                    : const Color(0xffcc675a);
+
+    return HoverCard(
+      padding: const EdgeInsets.all(20),
       child: Row(
         children: [
           Container(
-            width: 58,
-            height: 58,
+            width: 62,
+            height: 62,
             decoration: BoxDecoration(
-              color: color.withOpacity(.12),
+              color: color.withOpacity(.14),
               shape: BoxShape.circle,
             ),
             alignment: Alignment.center,
@@ -1598,12 +2293,12 @@ class _WeatherShellState extends State<WeatherShell> {
               '${aqi ?? '—'}',
               style: TextStyle(
                 color: color,
-                fontWeight: FontWeight.w800,
-                fontSize: 20,
+                fontWeight: FontWeight.w900,
+                fontSize: 22,
               ),
             ),
-          ),
-          const SizedBox(width: 14),
+          ).animate().scale(duration: 400.ms, curve: Curves.elasticOut),
+          const SizedBox(width: 16),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1612,13 +2307,17 @@ class _WeatherShellState extends State<WeatherShell> {
                   aqi == null ? 'AQI unavailable' : _aqiLabel(aqi),
                   style: TextStyle(
                     color: color,
-                    fontWeight: FontWeight.w800,
-                    fontSize: 15,
+                    fontWeight: FontWeight.w900,
+                    fontSize: 17,
                   ),
                 ),
                 const Text(
                   'European AQI · Open-Meteo Air Quality',
-                  style: TextStyle(color: muted, fontSize: 10),
+                  style: TextStyle(
+                    color: muted,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500,
+                  ),
                 ),
               ],
             ),
@@ -1626,9 +2325,9 @@ class _WeatherShellState extends State<WeatherShell> {
           Text(
             'PM₂.₅  ${((a['pm2_5'] as num?)?.toDouble() ?? 0).toStringAsFixed(1)}',
             style: const TextStyle(
-              fontWeight: FontWeight.w700,
+              fontWeight: FontWeight.w800,
               color: ink,
-              fontSize: 12,
+              fontSize: 13,
             ),
           ),
         ],
@@ -1639,14 +2338,15 @@ class _WeatherShellState extends State<WeatherShell> {
   String _aqiLabel(int n) => n <= 20
       ? 'Good'
       : n <= 40
-      ? 'Fair'
-      : n <= 60
-      ? 'Moderate'
-      : n <= 80
-      ? 'Poor'
-      : n <= 100
-      ? 'Very poor'
-      : 'Extremely poor';
+          ? 'Fair'
+          : n <= 60
+              ? 'Moderate'
+              : n <= 80
+                  ? 'Poor'
+                  : n <= 100
+                      ? 'Very poor'
+                      : 'Extremely poor';
+
   Widget _airPage() {
     final a = _air;
     return Column(
@@ -1655,126 +2355,138 @@ class _WeatherShellState extends State<WeatherShell> {
         _sectionTitle(
           'Air quality',
           'Measured air conditions · ${_place.name}',
-        ),
+        ).animate().fadeIn(),
         const SizedBox(height: 18),
         _airSummary(),
         if (a != null) ...[
-          const SizedBox(height: 18),
-          Text(
+          const SizedBox(height: 22),
+          const Text(
             'POLLUTANTS',
             style: TextStyle(
-              fontSize: 10,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 1.3,
+              fontSize: 10.5,
+              fontWeight: FontWeight.w900,
+              letterSpacing: 1.4,
               color: muted,
             ),
-          ),
-          const SizedBox(height: 10),
-          ...[
-            _pollutant('PM2.5', 'pm2_5', 'μg/m³'),
-            _pollutant('PM10', 'pm10', 'μg/m³'),
-            _pollutant('Carbon monoxide', 'carbon_monoxide', 'μg/m³'),
-            _pollutant('Nitrogen dioxide', 'nitrogen_dioxide', 'μg/m³'),
-            _pollutant('Ozone', 'ozone', 'μg/m³'),
-            _pollutant('Sulphur dioxide', 'sulphur_dioxide', 'μg/m³'),
-          ],
+          ).animate().fadeIn(),
           const SizedBox(height: 12),
-          Text(
+          ...[
+            _pollutant('PM2.5', 'pm2_5', 'μg/m³', 0),
+            _pollutant('PM10', 'pm10', 'μg/m³', 1),
+            _pollutant('Carbon monoxide', 'carbon_monoxide', 'μg/m³', 2),
+            _pollutant('Nitrogen dioxide', 'nitrogen_dioxide', 'μg/m³', 3),
+            _pollutant('Ozone', 'ozone', 'μg/m³', 4),
+            _pollutant('Sulphur dioxide', 'sulphur_dioxide', 'μg/m³', 5),
+          ],
+          const SizedBox(height: 14),
+          const Text(
             'Readings are supplied by Open-Meteo. AQI uses the European scale (0–100+). Forecast model estimates may not reflect local roadside conditions.',
-            style: TextStyle(color: muted, fontSize: 11),
+            style: TextStyle(color: muted, fontSize: 11.5),
           ),
         ],
       ],
     );
   }
 
-  Widget _pollutant(String name, String key, String unit) {
+  Widget _pollutant(String name, String key, String unit, int i) {
     final n = (_air?[key] as num?)?.toDouble();
-    return Container(
+    return HoverCard(
       margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(16),
-      decoration: _cardDecoration(),
+      padding: const EdgeInsets.all(18),
       child: Row(
         children: [
           Expanded(
             child: Text(
               name,
-              style: const TextStyle(fontWeight: FontWeight.w700, color: ink),
+              style: const TextStyle(fontWeight: FontWeight.w800, color: ink),
             ),
           ),
           Text(
             n == null ? 'Unavailable' : '${n.toStringAsFixed(1)} $unit',
-            style: const TextStyle(color: muted, fontWeight: FontWeight.w700),
+            style: const TextStyle(color: sea, fontWeight: FontWeight.w800),
           ),
         ],
       ),
-    );
+    ).animate().fadeIn(
+          delay: Duration(milliseconds: 50 * i),
+          duration: 350.ms,
+        );
   }
 
   Widget _mapPage() => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      _sectionTitle('Weather map', 'Explore ${_place.name} and the world'),
-      const SizedBox(height: 14),
-      Container(
-        height: MediaQuery.sizeOf(context).height * .62,
-        clipBehavior: Clip.antiAlias,
-        decoration: _cardDecoration(),
-        child: FlutterMap(
-          options: MapOptions(
-            initialCenter: LatLng(_place.lat, _place.lon),
-            initialZoom: 7,
-            onTap: (tap, point) => _inspect(point),
-          ),
-          children: [
-            TileLayer(
-              urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-              userAgentPackageName: 'com.aether.weather',
-            ),
-            MarkerLayer(
-              markers: [
-                Marker(
-                  point: LatLng(_place.lat, _place.lon),
-                  width: 46,
-                  height: 46,
-                  child: const Icon(Icons.location_on, color: sea, size: 42),
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _sectionTitle('Weather map', 'Explore ${_place.name} and the world')
+              .animate()
+              .fadeIn(),
+          const SizedBox(height: 16),
+          HoverCard(
+            enableTilt: false,
+            borderRadius: 24,
+            child: SizedBox(
+              height: MediaQuery.sizeOf(context).height * .62,
+              child: FlutterMap(
+                options: MapOptions(
+                  initialCenter: LatLng(_place.lat, _place.lon),
+                  initialZoom: 7,
+                  onTap: (tap, point) => _inspect(point),
                 ),
-              ],
+                children: [
+                  TileLayer(
+                    urlTemplate:
+                        'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                    userAgentPackageName: 'com.aether.weather',
+                  ),
+                  MarkerLayer(
+                    markers: [
+                      Marker(
+                        point: LatLng(_place.lat, _place.lon),
+                        width: 50,
+                        height: 50,
+                        child: const Icon(
+                          Icons.location_on,
+                          color: sea,
+                          size: 46,
+                        ),
+                      ),
+                    ],
+                  ),
+                  RichAttributionWidget(
+                    attributions: [
+                      TextSourceAttribution(
+                        '© OpenStreetMap contributors',
+                        onTap: () => ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content:
+                                Text('Map data © OpenStreetMap contributors'),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             ),
-            RichAttributionWidget(
-              attributions: [
-                TextSourceAttribution(
-                  '© OpenStreetMap contributors',
-                  onTap: () => ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Map data © OpenStreetMap contributors'),
-                    ),
+          ).animate().fadeIn(duration: 500.ms),
+          const SizedBox(height: 16),
+          HoverCard(
+            padding: const EdgeInsets.all(18),
+            child: const Row(
+              children: [
+                Icon(Icons.info_outline, color: sea),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'Map tiles show geographic data only. Live weather overlays require a licensed tile source and are not available in this build.',
+                    style: TextStyle(color: muted, fontSize: 12),
                   ),
                 ),
               ],
             ),
-          ],
-        ),
-      ),
-      const SizedBox(height: 14),
-      Container(
-        padding: const EdgeInsets.all(16),
-        decoration: _cardDecoration(),
-        child: const Row(
-          children: [
-            Icon(Icons.info_outline, color: sea),
-            SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                'Map tiles show geographic data only. Live weather overlays require a licensed tile source and are not available in this build.',
-                style: TextStyle(color: muted, fontSize: 12),
-              ),
-            ),
-          ],
-        ),
-      ),
-    ],
-  );
+          ),
+        ],
+      );
+
   void _inspect(LatLng point) async {
     try {
       final r = await _dio.get(
@@ -1790,8 +2502,12 @@ class _WeatherShellState extends State<WeatherShell> {
       if (!mounted) return;
       showModalBottomSheet(
         context: context,
+        backgroundColor: Colors.white,
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
         builder: (_) => Padding(
-          padding: const EdgeInsets.all(24),
+          padding: const EdgeInsets.all(26),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -1799,29 +2515,39 @@ class _WeatherShellState extends State<WeatherShell> {
               Text(
                 '${point.latitude.toStringAsFixed(2)}, ${point.longitude.toStringAsFixed(2)}',
                 style: const TextStyle(
-                  fontWeight: FontWeight.w800,
-                  fontSize: 17,
+                  fontWeight: FontWeight.w900,
+                  fontSize: 18,
                 ),
               ),
               const SizedBox(height: 12),
               Text(
                 '${(cur['temperature_2m'] as num).round()}° · ${weatherText(cur['weather_code'])}',
-                style: const TextStyle(fontSize: 20),
+                style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
               ),
-              const SizedBox(height: 12),
-              FilledButton(
-                onPressed: () {
-                  Navigator.pop(context);
-                  _choose(
-                    Place(
-                      'Map location',
-                      '${point.latitude.toStringAsFixed(2)}, ${point.longitude.toStringAsFixed(2)}',
-                      point.latitude,
-                      point.longitude,
-                    ),
-                  );
-                },
-                child: const Text('Use this location'),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: sea,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                  onPressed: () {
+                    Navigator.pop(context);
+                    _choose(
+                      Place(
+                        'Map location',
+                        '${point.latitude.toStringAsFixed(2)}, ${point.longitude.toStringAsFixed(2)}',
+                        point.latitude,
+                        point.longitude,
+                      ),
+                    );
+                  },
+                  child: const Text(
+                    'Use this location',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                ),
               ),
             ],
           ),
@@ -1831,58 +2557,62 @@ class _WeatherShellState extends State<WeatherShell> {
   }
 
   Widget _locationsPage() => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      _sectionTitle(
-        'Global locations',
-        'Search and save places around the world',
-      ),
-      const SizedBox(height: 14),
-      _searchBox(),
-      const SizedBox(height: 20),
-      _sectionTitle('Recent searches', 'Your recently viewed locations'),
-      const SizedBox(height: 10),
-      if (_recent.isEmpty)
-        const Text(
-          'Locations you view will appear here.',
-          style: TextStyle(color: muted),
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _sectionTitle(
+            'Global locations',
+            'Search and save places around the world',
+          ).animate().fadeIn(),
+          const SizedBox(height: 16),
+          _searchBox(),
+          const SizedBox(height: 22),
+          _sectionTitle('Recent searches', 'Your recently viewed locations'),
+          const SizedBox(height: 12),
+          if (_recent.isEmpty)
+            const Text(
+              'Locations you view will appear here.',
+              style: TextStyle(color: muted),
+            ),
+          ..._recent.map((p) => _placeRow(p)),
+          const SizedBox(height: 22),
+          _sectionTitle('Favorites', 'Saved for quick access'),
+          const SizedBox(height: 12),
+          if (_favorites.isEmpty)
+            const Text(
+              'Tap the star next to a city to save it.',
+              style: TextStyle(color: muted),
+            ),
+          ..._favorites.map((p) => _placeRow(p, favorite: true)),
+        ],
+      );
+
+  Widget _placeRow(Place p, {bool favorite = false}) => HoverCard(
+        margin: const EdgeInsets.only(bottom: 8),
+        child: ListTile(
+          leading: const Icon(Icons.location_on_outlined, color: sea),
+          title: Text(
+            p.name,
+            style: const TextStyle(fontWeight: FontWeight.w800),
+          ),
+          subtitle: Text(p.country),
+          trailing: IconButton(
+            icon: Icon(
+              favorite ? Icons.star : Icons.star_border,
+              color: const Color(0xffd0a349),
+            ),
+            onPressed: () async {
+              setState(
+                () => favorite
+                    ? _favorites.removeWhere((x) => x.label == p.label)
+                    : _favorites.add(p),
+              );
+              await _persist();
+            },
+          ),
+          onTap: () => _choose(p),
         ),
-      ..._recent.map((p) => _placeRow(p)),
-      const SizedBox(height: 18),
-      _sectionTitle('Favorites', 'Saved for quick access'),
-      const SizedBox(height: 10),
-      if (_favorites.isEmpty)
-        const Text(
-          'Tap the star next to a city to save it.',
-          style: TextStyle(color: muted),
-        ),
-      ..._favorites.map((p) => _placeRow(p, favorite: true)),
-    ],
-  );
-  Widget _placeRow(Place p, {bool favorite = false}) => Container(
-    margin: const EdgeInsets.only(bottom: 8),
-    decoration: _cardDecoration(),
-    child: ListTile(
-      leading: const Icon(Icons.location_on_outlined, color: sea),
-      title: Text(p.name, style: const TextStyle(fontWeight: FontWeight.w700)),
-      subtitle: Text(p.country),
-      trailing: IconButton(
-        icon: Icon(
-          favorite ? Icons.star : Icons.star_border,
-          color: const Color(0xffd0a349),
-        ),
-        onPressed: () async {
-          setState(
-            () => favorite
-                ? _favorites.removeWhere((x) => x.label == p.label)
-                : _favorites.add(p),
-          );
-          await _persist();
-        },
-      ),
-      onTap: () => _choose(p),
-    ),
-  );
+      );
+
   Widget _comparePage() {
     final places = [
       _place,
@@ -1894,8 +2624,8 @@ class _WeatherShellState extends State<WeatherShell> {
         _sectionTitle(
           'Weather comparison',
           'Compare conditions across saved locations',
-        ),
-        const SizedBox(height: 15),
+        ).animate().fadeIn(),
+        const SizedBox(height: 18),
         ...places.map(
           (p) => FutureBuilder<Response<dynamic>>(
             future: _dio.get(
@@ -1908,41 +2638,51 @@ class _WeatherShellState extends State<WeatherShell> {
               },
             ),
             builder: (c, s) {
-              if (!s.hasData)
-                return Container(
-                  height: 80,
-                  margin: const EdgeInsets.only(bottom: 10),
-                  decoration: _cardDecoration(),
-                  child: const Center(
-                    child: CircularProgressIndicator(strokeWidth: 2),
+              if (!s.hasData) {
+                return HoverCard(
+                  margin: const EdgeInsets.only(bottom: 12),
+                  padding: const EdgeInsets.all(24),
+                  child: const SizedBox(
+                    height: 40,
+                    child: Center(
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
                   ),
                 );
+              }
               final x = s.data!.data['current'];
-              return Container(
-                margin: const EdgeInsets.only(bottom: 10),
-                padding: const EdgeInsets.all(18),
-                decoration: _cardDecoration(),
+              return HoverCard(
+                margin: const EdgeInsets.only(bottom: 12),
+                padding: const EdgeInsets.all(20),
                 child: Row(
                   children: [
                     Expanded(
                       child: Text(
                         p.label,
-                        style: const TextStyle(fontWeight: FontWeight.w700),
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w800,
+                          fontSize: 15,
+                        ),
                       ),
                     ),
-                    Icon(weatherIcon(x['weather_code']), color: sea),
-                    const SizedBox(width: 10),
+                    Icon(weatherIcon(x['weather_code']), color: sea, size: 24),
+                    const SizedBox(width: 14),
                     Text(
                       '${(x['temperature_2m'] as num).round()}°',
                       style: const TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.w800,
+                        fontSize: 26,
+                        fontWeight: FontWeight.w900,
+                        color: ink,
                       ),
                     ),
-                    const SizedBox(width: 15),
+                    const SizedBox(width: 18),
                     Text(
                       '${(x['wind_speed_10m'] as num).round()} km/h',
-                      style: const TextStyle(fontSize: 11, color: muted),
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: muted,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ],
                 ),
@@ -1950,8 +2690,8 @@ class _WeatherShellState extends State<WeatherShell> {
             },
           ),
         ),
-        const SizedBox(height: 8),
-        Text(
+        const SizedBox(height: 10),
+        const Text(
           'Add a favorite from Global locations to include another city.',
           style: TextStyle(color: muted, fontSize: 12),
         ),
@@ -1960,144 +2700,188 @@ class _WeatherShellState extends State<WeatherShell> {
   }
 
   Widget _aboutPage() => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      _sectionTitle('Weather, with a little more atmosphere', 'AETHER WEATHER'),
-      const SizedBox(height: 16),
-      Container(
-        padding: const EdgeInsets.all(22),
-        decoration: _cardDecoration(),
-        child: const Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'A calmer way to read the sky.',
-              style: TextStyle(
-                fontSize: 23,
-                fontWeight: FontWeight.w800,
-                color: ink,
-              ),
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _sectionTitle(
+            'Weather, with a little more atmosphere',
+            'AETHER WEATHER',
+          ).animate().fadeIn(),
+          const SizedBox(height: 18),
+          HoverCard(
+            padding: const EdgeInsets.all(26),
+            child: const Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'A calmer way to read the sky.',
+                  style: TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.w900,
+                    color: ink,
+                  ),
+                ),
+                SizedBox(height: 14),
+                Text(
+                  'Aether brings current conditions, forecasts and atmospheric context together in one considered view. The sky preview follows the selected location’s local sunrise and sunset; manual previews change the artwork only.',
+                  style: TextStyle(color: muted, height: 1.7, fontSize: 14),
+                ),
+                SizedBox(height: 22),
+                Text(
+                  'DATA SOURCES',
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 1.4,
+                    color: sea,
+                  ),
+                ),
+                SizedBox(height: 10),
+                Text(
+                  'Weather forecast · Open-Meteo\nAir quality · Open-Meteo\nMap tiles · © OpenStreetMap contributors',
+                  style: TextStyle(
+                    color: ink,
+                    height: 1.8,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
             ),
-            SizedBox(height: 12),
-            Text(
-              'Aether brings current conditions, forecasts and atmospheric context together in one considered view. The sky preview follows the selected location’s local sunrise and sunset; manual previews change the artwork only.',
-              style: TextStyle(color: muted, height: 1.7),
-            ),
-            SizedBox(height: 18),
-            Text(
-              'DATA SOURCES',
-              style: TextStyle(
-                fontSize: 10,
-                fontWeight: FontWeight.w800,
-                letterSpacing: 1.2,
-                color: sea,
-              ),
-            ),
-            SizedBox(height: 8),
-            Text(
-              'Weather forecast · Open-Meteo\nAir quality · Open-Meteo\nMap tiles · © OpenStreetMap contributors',
-              style: TextStyle(color: ink, height: 1.8),
-            ),
-          ],
-        ),
-      ),
-    ],
-  );
+          ).animate().fadeIn(duration: 500.ms),
+        ],
+      );
+
   Widget _settingsPage() => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      _sectionTitle('Settings', 'Make Aether feel like yours'),
-      const SizedBox(height: 16),
-      Container(
-        decoration: _cardDecoration(),
-        child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _sectionTitle('Settings', 'Make Aether feel like yours')
+              .animate()
+              .fadeIn(),
+          const SizedBox(height: 18),
+          HoverCard(
+            padding: EdgeInsets.zero,
+            child: Column(
+              children: [
+                SwitchListTile(
+                  activeTrackColor: sea,
+                  title: const Text(
+                    'Temperature in Fahrenheit',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  subtitle: const Text('Turn off for Celsius'),
+                  value: _fahrenheit,
+                  onChanged: (v) async {
+                    setState(() => _fahrenheit = v);
+                    await _persist();
+                  },
+                ),
+                const Divider(height: 1, color: Color(0xffedf0f1)),
+                ListTile(
+                  title: const Text(
+                    'Atmospheric Scene Mode',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  subtitle: Text(_bgMode.label),
+                  trailing: DropdownButton<BackgroundMode>(
+                    value: _bgMode,
+                    underline: const SizedBox.shrink(),
+                    icon: const Icon(Icons.keyboard_arrow_down, color: sea),
+                    onChanged: (mode) {
+                      if (mode != null) {
+                        setState(() => _bgMode = mode);
+                        _persist();
+                      }
+                    },
+                    items: BackgroundMode.values
+                        .map(
+                          (m) => DropdownMenuItem(
+                            value: m,
+                            child: Text(
+                              m.label,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ),
+                        )
+                        .toList(),
+                  ),
+                ),
+                const Divider(height: 1, color: Color(0xffedf0f1)),
+                ListTile(
+                  title: const Text(
+                    'Wind speed unit',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  subtitle: const Text('Kilometres per hour (km/h)'),
+                  trailing: const Icon(Icons.chevron_right, color: muted),
+                ),
+              ],
+            ),
+          ).animate().fadeIn(duration: 500.ms),
+          const SizedBox(height: 22),
+          _sectionTitle(
+            'Current location',
+            '${_place.lat.toStringAsFixed(3)}, ${_place.lon.toStringAsFixed(3)} · ${_weather?.timezone ?? '—'}',
+          ),
+          const SizedBox(height: 12),
+          HoverCard(
+            child: ListTile(
+              leading: const Icon(Icons.location_on, color: sea, size: 26),
+              title: Text(
+                _place.label,
+                style: const TextStyle(fontWeight: FontWeight.w800),
+              ),
+              subtitle: Text(
+                'Weather updated ${_weather == null ? '—' : DateFormat('HH:mm').format(_weather!.localTime)} local time',
+              ),
+              trailing: IconButton(
+                onPressed: _load,
+                icon: const Icon(Icons.refresh, color: sea),
+              ),
+            ),
+          ),
+        ],
+      );
+
+  Widget _sideHeading(String t) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        child: Text(
+          t,
+          style: const TextStyle(
+            fontSize: 9.5,
+            letterSpacing: 1.5,
+            color: muted,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+      );
+
+  Widget _errorBanner() => Container(
+        color: const Color(0xfffff1ea),
+        padding: const EdgeInsets.all(14),
+        child: Row(
           children: [
-            SwitchListTile(
-              title: const Text('Temperature in Fahrenheit'),
-              subtitle: const Text('Turn off for Celsius'),
-              value: _fahrenheit,
-              onChanged: (v) async {
-                setState(() => _fahrenheit = v);
-                await _persist();
-              },
-            ),
-            const Divider(height: 1),
-            SwitchListTile(
-              title: const Text('Preview night sky'),
-              subtitle: const Text(
-                'Visual preview only · weather data stays unchanged',
+            const Icon(Icons.wifi_off, color: Color(0xffbd6b45)),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                _error!,
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: Color(0xff8a3c1b),
+                ),
               ),
-              value: _manualPreview && _previewNight,
-              onChanged: (v) => setState(() {
-                _manualPreview = true;
-                _previewNight = v;
-              }),
             ),
-            const Divider(height: 1),
-            ListTile(
-              title: const Text('Automatic sky mode'),
-              subtitle: const Text(
-                'Use this location’s local sunrise and sunset',
+            TextButton(
+              onPressed: _load,
+              child: const Text(
+                'Retry',
+                style: TextStyle(fontWeight: FontWeight.bold),
               ),
-              trailing: TextButton(
-                onPressed: () => setState(() => _manualPreview = false),
-                child: const Text('Reset'),
-              ),
-              onTap: () => setState(() => _manualPreview = false),
-            ),
-            const Divider(height: 1),
-            ListTile(
-              title: const Text('Wind speed'),
-              subtitle: const Text('Kilometres per hour'),
-              trailing: const Icon(Icons.chevron_right),
             ),
           ],
         ),
-      ),
-      const SizedBox(height: 18),
-      _sectionTitle(
-        'Current location',
-        '${_place.lat.toStringAsFixed(3)}, ${_place.lon.toStringAsFixed(3)} · ${_weather?.timezone ?? '—'}',
-      ),
-      const SizedBox(height: 10),
-      Container(
-        decoration: _cardDecoration(),
-        child: ListTile(
-          leading: const Icon(Icons.location_on, color: sea),
-          title: Text(_place.label),
-          subtitle: Text(
-            'Weather updated ${_weather == null ? '—' : DateFormat('HH:mm').format(_weather!.localTime)} local time',
-          ),
-          trailing: IconButton(
-            onPressed: _load,
-            icon: const Icon(Icons.refresh),
-          ),
-        ),
-      ),
-    ],
-  );
-  Widget _sideHeading(String t) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 10),
-    child: Text(
-      t,
-      style: const TextStyle(
-        fontSize: 9,
-        letterSpacing: 1.4,
-        color: muted,
-        fontWeight: FontWeight.w800,
-      ),
-    ),
-  );
-  Widget _errorBanner() => Container(
-    color: const Color(0xfffff1ea),
-    padding: const EdgeInsets.all(12),
-    child: Row(
-      children: [
-        const Icon(Icons.wifi_off, color: Color(0xffbd6b45)),
-        const SizedBox(width: 8),
-        Expanded(child: Text(_error!, style: const TextStyle(fontSize: 12))),
-        TextButton(onPressed: _load, child: const Text('Retry')),
-      ],
-    ),
-  );
+      );
 }
