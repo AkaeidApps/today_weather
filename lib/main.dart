@@ -92,8 +92,12 @@ class WeatherData {
         time.hour < DateTime.parse('$sunset').hour;
   }
 
-  /// Calculates atmospheric background scene based on time of day (Sunrise, Sunset, Moonlight, Day)
+  /// Calculates atmospheric background scene based on time of day (Sunrise, Sunset, Moonlight, Day, Rain)
   BackgroundScene get automaticScene {
+    if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82) || code >= 95) {
+      return BackgroundScene.rainy;
+    }
+
     final time = localTime;
     final sr = _dailyTime('sunrise');
     final ss = _dailyTime('sunset');
@@ -111,7 +115,7 @@ class WeatherData {
         return BackgroundScene.sunset;
       }
       if (time.isAfter(sr) && time.isBefore(ss)) {
-        return BackgroundScene.sunrise; // daytime horizon
+        return BackgroundScene.sunrise;
       }
       return BackgroundScene.moonlight;
     }
@@ -355,7 +359,6 @@ class _WeatherShellState extends State<WeatherShell> {
   bool _searching = false;
   final _searchCtl = TextEditingController();
 
-  // Mouse Parallax coordinates for hero sky card
   Offset _heroMouse = Offset.zero;
   bool _heroHovered = false;
 
@@ -594,7 +597,6 @@ class _WeatherShellState extends State<WeatherShell> {
   String _temp(num n) =>
       '${_fahrenheit ? (n * 9 / 5 + 32).round() : n.round()}°';
 
-  /// Format ISO time strings cleanly (e.g. "2025-02-17T06:23" -> "06:23 AM")
   String _clock(String value) {
     if (value.trim().isEmpty || value == '—') return '—';
     final dt = DateTime.tryParse(value);
@@ -605,7 +607,7 @@ class _WeatherShellState extends State<WeatherShell> {
     return value;
   }
 
-  /// Returns the current active background scene (Sunrise, Sunset, Moonlight/Night, Daytime)
+  /// Returns the active background scene (Sunrise, Sunset, Moonlight, Rainy)
   BackgroundScene get _activeScene {
     if (_bgMode.previewScene != null) {
       return _bgMode.previewScene!;
@@ -636,12 +638,20 @@ class _WeatherShellState extends State<WeatherShell> {
             const Color(0xff16243a),
             const Color(0xff21314a),
           ],
+        BackgroundScene.rainy => [
+            const Color(0xff121d27),
+            const Color(0xff1c2b36),
+            const Color(0xff293a47),
+            const Color(0xff3a4d5b),
+            const Color(0xff4f6372),
+          ],
       };
 
   bool get _isAtmosphericScene => true;
 
   Color get _textColor => _isAtmosphericScene ? Colors.white : ink;
   Color get _mutedTextColor => _isAtmosphericScene ? Colors.white70 : muted;
+
   BoxDecoration get _cardGlassDecoration => BoxDecoration(
         color: _isAtmosphericScene
             ? Colors.white.withValues(alpha: 0.14)
@@ -665,8 +675,8 @@ class _WeatherShellState extends State<WeatherShell> {
 
   @override
   Widget build(BuildContext context) {
-    final wide = MediaQuery.sizeOf(context).width > 850;
-    final fullSky = _fullBgGradients;
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final isDesktop = screenWidth > 920;
 
     return Scaffold(
       body: AnimatedContainer(
@@ -676,43 +686,74 @@ class _WeatherShellState extends State<WeatherShell> {
           gradient: LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: fullSky,
+            colors: _fullBgGradients,
           ),
         ),
-        child: SafeArea(
-          child: Column(
-            children: [
-              _header(wide),
-              if (_error != null) _errorBanner(),
-              Expanded(
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 380),
-                  switchInCurve: Curves.easeOutCubic,
-                  switchOutCurve: Curves.easeInCubic,
-                  transitionBuilder: (child, animation) => FadeTransition(
-                    opacity: animation,
-                    child: SlideTransition(
-                      position: Tween<Offset>(
-                        begin: const Offset(0.015, 0),
-                        end: Offset.zero,
-                      ).animate(animation),
-                      child: child,
+        child: Stack(
+          children: [
+            // Background Rain animation overlay for Rainy Scene
+            if (_activeScene == BackgroundScene.rainy)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: Stack(
+                    children: List.generate(
+                      45,
+                      (i) => Positioned(
+                        left: (i * 24.0) % screenWidth,
+                        top: (i * 37.0) % 900,
+                        child: Transform.rotate(
+                          angle: -0.2,
+                          child: Container(
+                            width: 1.6,
+                            height: 14,
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.35),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                          ),
+                        ),
+                      ),
                     ),
                   ),
-                  child: wide ? _desktopBody() : _mobileBody(),
                 ),
               ),
-              if (!wide) _bottomNav(),
-            ],
-          ),
+
+            SafeArea(
+              child: Column(
+                children: [
+                  _header(isDesktop),
+                  if (_error != null) _errorBanner(),
+                  Expanded(
+                    child: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 380),
+                      switchInCurve: Curves.easeOutCubic,
+                      switchOutCurve: Curves.easeInCubic,
+                      transitionBuilder: (child, animation) => FadeTransition(
+                        opacity: animation,
+                        child: SlideTransition(
+                          position: Tween<Offset>(
+                            begin: const Offset(0.015, 0),
+                            end: Offset.zero,
+                          ).animate(animation),
+                          child: child,
+                        ),
+                      ),
+                      child: isDesktop ? _desktopBody() : _mobileBody(),
+                    ),
+                  ),
+                  if (!isDesktop) _bottomNav(),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
-      floatingActionButton: wide
+      floatingActionButton: isDesktop
           ? null
           : FloatingActionButton.small(
               onPressed: _gps,
-              backgroundColor: _isAtmosphericScene ? Colors.white : ink,
-              foregroundColor: _isAtmosphericScene ? ink : Colors.white,
+              backgroundColor: Colors.white,
+              foregroundColor: ink,
               child: const Icon(Icons.my_location_rounded),
             ).animate().scale(delay: 300.ms, duration: 400.ms, curve: Curves.elasticOut),
     );
@@ -784,7 +825,7 @@ class _WeatherShellState extends State<WeatherShell> {
                     fontWeight: FontWeight.w700,
                     fontSize: 9,
                     letterSpacing: 3.0,
-                    color: _isAtmosphericScene ? const Color(0xffffd166) : sea,
+                    color: const Color(0xffffd166),
                   ),
                 ),
               ],
@@ -825,9 +866,9 @@ class _WeatherShellState extends State<WeatherShell> {
                   child: Text(
                     _fahrenheit ? '°F' : '°C',
                     key: ValueKey(_fahrenheit),
-                    style: TextStyle(
+                    style: const TextStyle(
                       fontWeight: FontWeight.bold,
-                      color: _isAtmosphericScene ? const Color(0xffffd166) : sea,
+                      color: Color(0xffffd166),
                       fontSize: 15,
                     ),
                   ),
@@ -848,18 +889,14 @@ class _WeatherShellState extends State<WeatherShell> {
           duration: const Duration(milliseconds: 200),
           decoration: BoxDecoration(
             color: _tab == i
-                ? (_isAtmosphericScene
-                    ? Colors.white.withValues(alpha: 0.25)
-                    : sea.withValues(alpha: 0.12))
+                ? Colors.white.withValues(alpha: 0.25)
                 : Colors.transparent,
             borderRadius: BorderRadius.circular(10),
           ),
           child: TextButton(
             onPressed: () => setState(() => _tab = i),
             style: TextButton.styleFrom(
-              foregroundColor: _tab == i
-                  ? (_isAtmosphericScene ? const Color(0xffffd166) : sea)
-                  : _mutedTextColor,
+              foregroundColor: _tab == i ? const Color(0xffffd166) : _mutedTextColor,
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             ),
             child: Text(
@@ -873,67 +910,47 @@ class _WeatherShellState extends State<WeatherShell> {
         ),
       );
 
+  /// Professional Modern Bottom Navigation Bar
   Widget _bottomNav() => AnimatedContainer(
         duration: const Duration(milliseconds: 500),
         decoration: BoxDecoration(
-          color: _isAtmosphericScene
-              ? Colors.white.withValues(alpha: 0.15)
-              : Colors.white,
+          color: Colors.white.withValues(alpha: 0.16),
           border: Border(
             top: BorderSide(
-              color: _isAtmosphericScene
-                  ? Colors.white.withValues(alpha: 0.2)
-                  : const Color(0xffe9edef),
+              color: Colors.white.withValues(alpha: 0.22),
             ),
           ),
         ),
         child: NavigationBar(
-          height: 66,
+          height: 68,
           selectedIndex: _tab < 5 ? _tab : 0,
           onDestinationSelected: (i) => setState(() => _tab = i),
           backgroundColor: Colors.transparent,
-          indicatorColor: _isAtmosphericScene
-              ? Colors.white.withValues(alpha: 0.25)
-              : sea.withValues(alpha: .14),
-          destinations: [
+          indicatorColor: Colors.white.withValues(alpha: 0.28),
+          destinations: const [
             NavigationDestination(
-              icon: Icon(Icons.wb_sunny_outlined, color: _mutedTextColor),
-              selectedIcon: Icon(
-                Icons.wb_sunny_rounded,
-                color: _isAtmosphericScene ? const Color(0xffffd166) : sea,
-              ),
+              icon: Icon(Icons.wb_sunny_outlined, color: Colors.white70),
+              selectedIcon: Icon(Icons.wb_sunny_rounded, color: Color(0xffffd166)),
               label: 'Today',
             ),
             NavigationDestination(
-              icon: Icon(Icons.map_outlined, color: _mutedTextColor),
-              selectedIcon: Icon(
-                Icons.map,
-                color: _isAtmosphericScene ? const Color(0xffffd166) : sea,
-              ),
+              icon: Icon(Icons.map_outlined, color: Colors.white70),
+              selectedIcon: Icon(Icons.map_rounded, color: Color(0xffffd166)),
               label: 'Map',
             ),
             NavigationDestination(
-              icon: Icon(Icons.schedule, color: _mutedTextColor),
-              selectedIcon: Icon(
-                Icons.schedule,
-                color: _isAtmosphericScene ? const Color(0xffffd166) : sea,
-              ),
+              icon: Icon(Icons.access_time_rounded, color: Colors.white70),
+              selectedIcon: Icon(Icons.schedule_rounded, color: Color(0xffffd166)),
               label: 'Hourly',
             ),
             NavigationDestination(
-              icon: Icon(Icons.calendar_month_outlined, color: _mutedTextColor),
-              selectedIcon: Icon(
-                Icons.calendar_month,
-                color: _isAtmosphericScene ? const Color(0xffffd166) : sea,
-              ),
-              label: '7 day',
+              icon: Icon(Icons.calendar_month_outlined, color: Colors.white70),
+              selectedIcon: Icon(Icons.calendar_month_rounded, color: Color(0xffffd166)),
+              label: '7 Day',
             ),
             NavigationDestination(
-              icon: Icon(Icons.menu, color: _mutedTextColor),
-              selectedIcon: Icon(
-                Icons.menu,
-                color: _isAtmosphericScene ? const Color(0xffffd166) : sea,
-              ),
+              icon: Icon(Icons.grid_view_outlined, color: Colors.white70),
+              selectedIcon: Icon(Icons.grid_view_rounded, color: Color(0xffffd166)),
               label: 'More',
             ),
           ],
@@ -964,7 +981,7 @@ class _WeatherShellState extends State<WeatherShell> {
               child: ListTile(
                 leading: Icon(
                   _pageIcon(k),
-                  color: _isAtmosphericScene ? const Color(0xffffd166) : sea,
+                  color: const Color(0xffffd166),
                 ),
                 title: Text(
                   pages[k],
@@ -985,7 +1002,7 @@ class _WeatherShellState extends State<WeatherShell> {
 
   IconData _pageIcon(int i) => switch (i) {
         1 => Icons.map_outlined,
-        2 => Icons.schedule,
+        2 => Icons.access_time_rounded,
         3 => Icons.calendar_month_outlined,
         4 => Icons.air,
         5 => Icons.blur_on,
@@ -1004,9 +1021,7 @@ class _WeatherShellState extends State<WeatherShell> {
               color: Colors.white.withValues(alpha: 0.12),
               border: Border(
                 right: BorderSide(
-                  color: _isAtmosphericScene
-                      ? Colors.white.withValues(alpha: 0.2)
-                      : const Color(0xffe9edef),
+                  color: Colors.white.withValues(alpha: 0.2),
                 ),
               ),
             ),
@@ -1026,9 +1041,7 @@ class _WeatherShellState extends State<WeatherShell> {
                     onTap: () => setState(() => _tab = i),
                     decoration: BoxDecoration(
                       color: _tab == i
-                          ? (_isAtmosphericScene
-                              ? Colors.white.withValues(alpha: 0.25)
-                              : sea.withValues(alpha: .10))
+                          ? Colors.white.withValues(alpha: 0.25)
                           : Colors.transparent,
                       borderRadius: BorderRadius.circular(12),
                     ),
@@ -1043,9 +1056,7 @@ class _WeatherShellState extends State<WeatherShell> {
                             _pageIcon(i),
                             size: 20,
                             color: _tab == i
-                                ? (_isAtmosphericScene
-                                    ? const Color(0xffffd166)
-                                    : sea)
+                                ? const Color(0xffffd166)
                                 : _mutedTextColor,
                           ),
                           const SizedBox(width: 12),
@@ -1056,9 +1067,7 @@ class _WeatherShellState extends State<WeatherShell> {
                               fontWeight:
                                   _tab == i ? FontWeight.w800 : FontWeight.w600,
                               color: _tab == i
-                                  ? (_isAtmosphericScene
-                                      ? const Color(0xffffd166)
-                                      : sea)
+                                  ? const Color(0xffffd166)
                                   : _textColor,
                             ),
                           ),
@@ -1115,14 +1124,12 @@ class _WeatherShellState extends State<WeatherShell> {
             decoration: InputDecoration(
               hintText: 'Search a city...',
               hintStyle: TextStyle(color: _mutedTextColor),
-              prefixIcon: Icon(
+              prefixIcon: const Icon(
                 Icons.search_rounded,
-                color: _isAtmosphericScene ? const Color(0xffffd166) : sea,
+                color: Color(0xffffd166),
               ),
               filled: true,
-              fillColor: _isAtmosphericScene
-                  ? Colors.white.withValues(alpha: 0.18)
-                  : cream,
+              fillColor: Colors.white.withValues(alpha: 0.18),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(14),
                 borderSide: BorderSide.none,
@@ -1135,9 +1142,7 @@ class _WeatherShellState extends State<WeatherShell> {
               duration: const Duration(milliseconds: 250),
               margin: const EdgeInsets.only(top: 6),
               decoration: BoxDecoration(
-                color: _isAtmosphericScene
-                    ? const Color(0xff1b2838)
-                    : Colors.white,
+                color: const Color(0xff1b2838),
                 borderRadius: BorderRadius.circular(16),
                 boxShadow: [
                   BoxShadow(
@@ -1174,9 +1179,9 @@ class _WeatherShellState extends State<WeatherShell> {
 
   Widget _content() {
     if (_loading && _weather == null) {
-      return Center(
+      return const Center(
         child: CircularProgressIndicator(
-          color: _isAtmosphericScene ? const Color(0xffffd166) : sea,
+          color: Color(0xffffd166),
           strokeWidth: 3,
         ),
       );
@@ -1203,8 +1208,8 @@ class _WeatherShellState extends State<WeatherShell> {
                 icon: const Icon(Icons.refresh),
                 label: const Text('Try again'),
                 style: FilledButton.styleFrom(
-                  backgroundColor: _isAtmosphericScene ? const Color(0xffffd166) : sea,
-                  foregroundColor: _isAtmosphericScene ? ink : Colors.white,
+                  backgroundColor: const Color(0xffffd166),
+                  foregroundColor: ink,
                   padding:
                       const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
                 ),
@@ -1216,45 +1221,52 @@ class _WeatherShellState extends State<WeatherShell> {
     }
 
     return LayoutBuilder(
-      builder: (ctx, box) => SingleChildScrollView(
-        physics: const BouncingScrollPhysics(),
-        padding: EdgeInsets.fromLTRB(
-          box.maxWidth > 700 ? 38 : 18,
-          box.maxWidth > 700 ? 26 : 16,
-          box.maxWidth > 700 ? 38 : 18,
-          36,
-        ),
-        child: _tab == 0
-            ? _dashboard(box.maxWidth)
-            : _tab == 1
-                ? _mapPage()
-                : _tab == 2
-                    ? _hourlyPage()
-                    : _tab == 3
-                        ? _weeklyPage()
-                        : _tab == 4
-                            ? _windPage()
-                            : _tab == 5
-                                ? _airPage()
-                                : _tab == 6
-                                    ? _locationsPage()
-                                    : _tab == 7
-                                        ? _comparePage()
-                                        : _tab == 8
-                                            ? _aboutPage()
-                                            : _settingsPage(),
-      ),
+      builder: (ctx, box) {
+        final horizontalPadding = (box.maxWidth * 0.04).clamp(16.0, 42.0);
+        return SingleChildScrollView(
+          physics: const BouncingScrollPhysics(),
+          padding: EdgeInsets.fromLTRB(
+            horizontalPadding,
+            box.maxWidth > 700 ? 24 : 16,
+            horizontalPadding,
+            36,
+          ),
+          child: _tab == 0
+              ? _dashboard(box.maxWidth)
+              : _tab == 1
+                  ? _mapPage()
+                  : _tab == 2
+                      ? _hourlyPage()
+                      : _tab == 3
+                          ? _weeklyPage()
+                          : _tab == 4
+                              ? _windPage()
+                              : _tab == 5
+                                  ? _airPage()
+                                  : _tab == 6
+                                      ? _locationsPage()
+                                      : _tab == 7
+                                          ? _comparePage()
+                                          : _tab == 8
+                                              ? _aboutPage()
+                                              : _settingsPage(),
+        );
+      },
     );
   }
 
   Widget _dashboard(double width) {
     final w = _weather;
     if (w == null) return const SizedBox.shrink();
-    final wide = width > 720;
+
+    // Device responsive grid column count
+    final gridCount = width > 1100 ? 4 : width > 600 ? 3 : 2;
+    final gridAspect = width > 1100 ? 1.7 : width > 600 ? 1.5 : 1.32;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _hero(w, wide),
+        _hero(w, width),
         const SizedBox(height: 24),
         _sectionTitle(
           'The next 24 hours',
@@ -1265,12 +1277,12 @@ class _WeatherShellState extends State<WeatherShell> {
         _hourStrip(w).animate().fadeIn(delay: 100.ms, duration: 450.ms),
         const SizedBox(height: 24),
         GridView.count(
-          crossAxisCount: wide ? 4 : 2,
+          crossAxisCount: gridCount,
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
           mainAxisSpacing: 14,
           crossAxisSpacing: 14,
-          childAspectRatio: wide ? 1.65 : 1.35,
+          childAspectRatio: gridAspect,
           children: [
             _metric(
               'FEELS LIKE',
@@ -1322,34 +1334,8 @@ class _WeatherShellState extends State<WeatherShell> {
     );
   }
 
-  /// Calculates atmospheric color palette based on BackgroundScene (Sunrise, Sunset, Moonlight, Day)
+  /// Atmospheric color palette based on BackgroundScene (Sunrise, Sunset, Moonlight, Rainy)
   List<Color> _skyColors(BackgroundScene scene, int code) {
-    final storm = code >= 95;
-    final rain = (code >= 51 && code <= 67) || (code >= 80 && code <= 82) || storm;
-    final snow = (code >= 71 && code <= 77) || code == 85 || code == 86;
-
-    if (storm) {
-      return [
-        const Color(0xff1f2833),
-        const Color(0xff394956),
-        const Color(0xff526472),
-      ];
-    }
-    if (rain) {
-      return [
-        const Color(0xff2c3e50),
-        const Color(0xff53717f),
-        const Color(0xff7895a0),
-      ];
-    }
-    if (snow) {
-      return [
-        const Color(0xff4b6584),
-        const Color(0xff778ca3),
-        const Color(0xffd1d8e0),
-      ];
-    }
-
     return switch (scene) {
       BackgroundScene.sunrise => [
           const Color(0xff3f2b47),
@@ -1369,16 +1355,23 @@ class _WeatherShellState extends State<WeatherShell> {
           const Color(0xff415a77),
           const Color(0xff778da9),
         ],
+      BackgroundScene.rainy => [
+          const Color(0xff1f2d3a),
+          const Color(0xff314352),
+          const Color(0xff465b6c),
+          const Color(0xff60778a),
+        ],
     };
   }
 
-  Widget _hero(WeatherData w, bool wide) {
+  Widget _hero(WeatherData w, double screenWidth) {
+    final wide = screenWidth > 720;
     final scene = _activeScene;
     final code = w.code;
     final storm = code >= 95,
         rain =
-            (code >= 51 && code <= 67) || (code >= 80 && code <= 82) || storm,
-        cloudy = code == 2 || code == 3 || code == 45 || code == 48;
+            (code >= 51 && code <= 67) || (code >= 80 && code <= 82) || storm || scene == BackgroundScene.rainy,
+        cloudy = code == 2 || code == 3 || code == 45 || code == 48 || scene == BackgroundScene.rainy;
 
     final dt = DateFormat('EEEE, d MMMM · HH:mm').format(w.localTime);
     final sunrise = _clock(w.sunrise);
@@ -1387,7 +1380,7 @@ class _WeatherShellState extends State<WeatherShell> {
     final sky = _skyColors(scene, code);
 
     final heroWidth = wide ? 900.0 : 400.0;
-    final heroHeight = wide ? 335.0 : 365.0;
+    final heroHeight = wide ? 340.0 : 375.0;
     final dx = _heroHovered
         ? ((_heroMouse.dx / heroWidth) - 0.5).clamp(-0.5, 0.5)
         : 0.0;
@@ -1408,9 +1401,9 @@ class _WeatherShellState extends State<WeatherShell> {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 700),
         curve: Curves.easeOutCubic,
-        height: wide ? 340 : 375,
+        height: wide ? 345 : 380,
         width: double.infinity,
-        padding: EdgeInsets.all(wide ? 34 : 24),
+        padding: EdgeInsets.all(wide ? 34 : 22),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(32),
           gradient: LinearGradient(
@@ -1589,7 +1582,7 @@ class _WeatherShellState extends State<WeatherShell> {
                               _temp(w.temp),
                               style: TextStyle(
                                 color: Colors.white,
-                                fontSize: wide ? 82 : 74,
+                                fontSize: wide ? 82 : 72,
                                 fontWeight: FontWeight.w300,
                                 height: 1,
                                 letterSpacing: -5,
@@ -1693,6 +1686,7 @@ class _WeatherShellState extends State<WeatherShell> {
         BackgroundMode.sunrise => Icons.wb_twilight_rounded,
         BackgroundMode.sunset => Icons.wb_sunny_rounded,
         BackgroundMode.moonlight => Icons.nightlight_round,
+        BackgroundMode.rainy => Icons.thunderstorm_rounded,
       };
 
   Widget _celestialBody(BackgroundScene scene) {
@@ -1768,6 +1762,33 @@ class _WeatherShellState extends State<WeatherShell> {
             duration: 2800.ms,
             curve: Curves.easeInOut,
           ),
+      BackgroundScene.rainy => Container(
+          width: 120,
+          height: 120,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: const RadialGradient(
+              colors: [Color(0xff6c7a89), Color(0xff394b59)],
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xff8697a8).withValues(alpha: 0.60),
+                blurRadius: 58,
+                spreadRadius: 24,
+              ),
+            ],
+          ),
+          child: const Icon(
+            Icons.thunderstorm_rounded,
+            color: Color(0xffffd166),
+            size: 64,
+          ),
+        ).animate(onPlay: (c) => c.repeat(reverse: true)).scale(
+            begin: const Offset(1, 1),
+            end: const Offset(1.05, 1.05),
+            duration: 2400.ms,
+            curve: Curves.easeInOut,
+          ),
     };
   }
 
@@ -1825,8 +1846,7 @@ class _WeatherShellState extends State<WeatherShell> {
             TextButton(
               onPressed: onTap,
               style: TextButton.styleFrom(
-                foregroundColor:
-                    _isAtmosphericScene ? const Color(0xffffd166) : sea,
+                foregroundColor: const Color(0xffffd166),
               ),
               child: const Text(
                 'View all',
@@ -1846,9 +1866,7 @@ class _WeatherShellState extends State<WeatherShell> {
           itemCount: 24,
           separatorBuilder: (context, index) => VerticalDivider(
             width: 1,
-            color: _isAtmosphericScene
-                ? Colors.white.withValues(alpha: 0.18)
-                : const Color(0xffedf0f1),
+            color: Colors.white.withValues(alpha: 0.18),
           ),
           itemBuilder: (c, i) {
             final h = w.hourly;
@@ -1889,7 +1907,7 @@ class _WeatherShellState extends State<WeatherShell> {
                         n < codes.length ? (codes[n] as num).toInt() : 0,
                       ),
                       size: 22,
-                      color: _isAtmosphericScene ? const Color(0xffffd166) : sea,
+                      color: const Color(0xffffd166),
                     ),
                     FittedBox(
                       fit: BoxFit.scaleDown,
@@ -1942,7 +1960,7 @@ class _WeatherShellState extends State<WeatherShell> {
                   Icon(
                     icon,
                     size: 18,
-                    color: _isAtmosphericScene ? const Color(0xffffd166) : sea,
+                    color: const Color(0xffffd166),
                   ),
                   const SizedBox(width: 8),
                   Expanded(
@@ -2051,7 +2069,7 @@ class _WeatherShellState extends State<WeatherShell> {
           ),
           Icon(
             weatherIcon((codes[i] as num).toInt()),
-            color: _isAtmosphericScene ? const Color(0xffffd166) : sea,
+            color: const Color(0xffffd166),
             size: 22,
           ),
           const SizedBox(width: 12),
@@ -2184,7 +2202,7 @@ class _WeatherShellState extends State<WeatherShell> {
           ),
           Icon(
             weatherIcon((codes[n] as num).toInt()),
-            color: _isAtmosphericScene ? const Color(0xffffd166) : sea,
+            color: const Color(0xffffd166),
             size: 22,
           ),
           const SizedBox(width: 12),
@@ -2287,9 +2305,7 @@ class _WeatherShellState extends State<WeatherShell> {
                       show: true,
                       drawVerticalLine: false,
                       getDrawingHorizontalLine: (_) => FlLine(
-                        color: _isAtmosphericScene
-                            ? Colors.white.withValues(alpha: 0.15)
-                            : const Color(0xffedf0f1),
+                        color: Colors.white.withValues(alpha: 0.15),
                         strokeWidth: 1,
                       ),
                     ),
@@ -2330,9 +2346,7 @@ class _WeatherShellState extends State<WeatherShell> {
                       LineChartBarData(
                         spots: points,
                         isCurved: true,
-                        color: _isAtmosphericScene
-                            ? const Color(0xffffd166)
-                            : sea,
+                        color: const Color(0xffffd166),
                         barWidth: 3,
                         isStrokeCapRound: true,
                         dotData: FlDotData(
@@ -2342,17 +2356,12 @@ class _WeatherShellState extends State<WeatherShell> {
                             radius: 4,
                             color: Colors.white,
                             strokeWidth: 2.5,
-                            strokeColor: _isAtmosphericScene
-                                ? const Color(0xffffd166)
-                                : sea,
+                            strokeColor: const Color(0xffffd166),
                           ),
                         ),
                         belowBarData: BarAreaData(
                           show: true,
-                          color: (_isAtmosphericScene
-                                  ? const Color(0xffffd166)
-                                  : sea)
-                              .withValues(alpha: .14),
+                          color: const Color(0xffffd166).withValues(alpha: .14),
                         ),
                       ),
                     ],
@@ -2391,10 +2400,10 @@ class _WeatherShellState extends State<WeatherShell> {
                   turns: w.bearing / 360.0,
                   duration: const Duration(milliseconds: 1000),
                   curve: Curves.easeOutBack,
-                  child: Icon(
+                  child: const Icon(
                     Icons.navigation_rounded,
                     size: 92,
-                    color: _isAtmosphericScene ? const Color(0xffffd166) : sea,
+                    color: Color(0xffffd166),
                   ),
                 ).animate().scale(duration: 500.ms, curve: Curves.elasticOut),
                 const SizedBox(height: 10),
@@ -2620,8 +2629,8 @@ class _WeatherShellState extends State<WeatherShell> {
           ),
           Text(
             n == null ? 'Unavailable' : '${n.toStringAsFixed(1)} $unit',
-            style: TextStyle(
-              color: _isAtmosphericScene ? const Color(0xffffd166) : sea,
+            style: const TextStyle(
+              color: Color(0xffffd166),
               fontWeight: FontWeight.w800,
             ),
           ),
@@ -2695,9 +2704,9 @@ class _WeatherShellState extends State<WeatherShell> {
             decoration: _cardGlassDecoration,
             child: Row(
               children: [
-                Icon(
+                const Icon(
                   Icons.info_outline,
-                  color: _isAtmosphericScene ? const Color(0xffffd166) : sea,
+                  color: Color(0xffffd166),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -2815,9 +2824,9 @@ class _WeatherShellState extends State<WeatherShell> {
         margin: const EdgeInsets.only(bottom: 8),
         decoration: _cardGlassDecoration,
         child: ListTile(
-          leading: Icon(
+          leading: const Icon(
             Icons.location_on_outlined,
-            color: _isAtmosphericScene ? const Color(0xffffd166) : sea,
+            color: Color(0xffffd166),
           ),
           title: Text(
             p.name,
@@ -2905,7 +2914,7 @@ class _WeatherShellState extends State<WeatherShell> {
                     ),
                     Icon(
                       weatherIcon(x['weather_code']),
-                      color: _isAtmosphericScene ? const Color(0xffffd166) : sea,
+                      color: const Color(0xffffd166),
                       size: 24,
                     ),
                     const SizedBox(width: 14),
@@ -2979,7 +2988,7 @@ class _WeatherShellState extends State<WeatherShell> {
                     fontSize: 10.5,
                     fontWeight: FontWeight.w900,
                     letterSpacing: 1.4,
-                    color: _isAtmosphericScene ? const Color(0xffffd166) : sea,
+                    color: const Color(0xffffd166),
                   ),
                 ),
                 const SizedBox(height: 10),
@@ -3030,9 +3039,7 @@ class _WeatherShellState extends State<WeatherShell> {
                 ),
                 Divider(
                   height: 1,
-                  color: _isAtmosphericScene
-                      ? Colors.white.withValues(alpha: 0.18)
-                      : const Color(0xffedf0f1),
+                  color: Colors.white.withValues(alpha: 0.18),
                 ),
                 ListTile(
                   title: Text(
@@ -3048,13 +3055,11 @@ class _WeatherShellState extends State<WeatherShell> {
                   ),
                   trailing: DropdownButton<BackgroundMode>(
                     value: _bgMode,
-                    dropdownColor: _isAtmosphericScene
-                        ? const Color(0xff1b2838)
-                        : Colors.white,
+                    dropdownColor: const Color(0xff1b2838),
                     underline: const SizedBox.shrink(),
-                    icon: Icon(
+                    icon: const Icon(
                       Icons.keyboard_arrow_down,
-                      color: _isAtmosphericScene ? const Color(0xffffd166) : sea,
+                      color: Color(0xffffd166),
                     ),
                     onChanged: (mode) {
                       if (mode != null) {
@@ -3081,9 +3086,7 @@ class _WeatherShellState extends State<WeatherShell> {
                 ),
                 Divider(
                   height: 1,
-                  color: _isAtmosphericScene
-                      ? Colors.white.withValues(alpha: 0.18)
-                      : const Color(0xffedf0f1),
+                  color: Colors.white.withValues(alpha: 0.18),
                 ),
                 ListTile(
                   title: Text(
@@ -3111,9 +3114,9 @@ class _WeatherShellState extends State<WeatherShell> {
           HoverCard(
             decoration: _cardGlassDecoration,
             child: ListTile(
-              leading: Icon(
+              leading: const Icon(
                 Icons.location_on,
-                color: _isAtmosphericScene ? const Color(0xffffd166) : sea,
+                color: Color(0xffffd166),
                 size: 26,
               ),
               title: Text(
@@ -3129,9 +3132,9 @@ class _WeatherShellState extends State<WeatherShell> {
               ),
               trailing: IconButton(
                 onPressed: _load,
-                icon: Icon(
+                icon: const Icon(
                   Icons.refresh,
-                  color: _isAtmosphericScene ? const Color(0xffffd166) : sea,
+                  color: Color(0xffffd166),
                 ),
               ),
             ),

@@ -1,19 +1,22 @@
-/// The three signature atmospheric backgrounds required by Aether Weather.
+/// Signature atmospheric backgrounds required by ATMOS Weather.
 enum BackgroundScene {
   sunrise,
   sunset,
-  moonlight;
+  moonlight,
+  rainy;
 
   String get displayName => switch (this) {
     BackgroundScene.sunrise => 'Sunrise',
     BackgroundScene.sunset => 'Sunset',
     BackgroundScene.moonlight => 'Moonlight',
+    BackgroundScene.rainy => 'Rainy Day',
   };
 
   String get description => switch (this) {
     BackgroundScene.sunrise => 'Golden dawn sky & soft rays',
     BackgroundScene.sunset => 'Coral horizon glow & dusk twilight',
     BackgroundScene.moonlight => 'Luminous moon, stars & midnight sky',
+    BackgroundScene.rainy => 'Stormy rain sky & falling showers',
   };
 }
 
@@ -22,13 +25,15 @@ enum BackgroundMode {
   automatic,
   sunrise,
   sunset,
-  moonlight;
+  moonlight,
+  rainy;
 
   String get label => switch (this) {
     BackgroundMode.automatic => 'Automatic',
     BackgroundMode.sunrise => 'Sunrise Preview',
     BackgroundMode.sunset => 'Sunset Preview',
     BackgroundMode.moonlight => 'Moonlight Preview',
+    BackgroundMode.rainy => 'Rainy Day Preview',
   };
 
   BackgroundScene? get previewScene => switch (this) {
@@ -36,5 +41,6 @@ enum BackgroundMode {
     BackgroundMode.sunrise => BackgroundScene.sunrise,
     BackgroundMode.sunset => BackgroundScene.sunset,
     BackgroundMode.moonlight => BackgroundScene.moonlight,
+    BackgroundMode.rainy => BackgroundScene.rainy,
   };
 }
