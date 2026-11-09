@@ -168,6 +168,115 @@ IconData weatherIcon(int code, {bool night = false}) => switch (code) {
   _ => Icons.cloud_rounded,
 };
 
+/// Continuous Drop-by-Drop Falling Rain Particle Overlay
+class RainDropOverlay extends StatefulWidget {
+  const RainDropOverlay({super.key, this.dropCount = 70});
+  final int dropCount;
+
+  @override
+  State<RainDropOverlay> createState() => _RainDropOverlayState();
+}
+
+class _RainDropOverlayState extends State<RainDropOverlay>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  late List<_RainDrop> _drops;
+  final math.Random _random = math.Random();
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 1),
+    )..repeat();
+
+    _drops = List.generate(widget.dropCount, (_) => _createDrop());
+  }
+
+  _RainDrop _createDrop() {
+    return _RainDrop(
+      x: _random.nextDouble(),
+      y: _random.nextDouble(),
+      length: 12 + _random.nextDouble() * 18,
+      speed: 0.012 + _random.nextDouble() * 0.018,
+      opacity: 0.25 + _random.nextDouble() * 0.50,
+      thickness: 1.2 + _random.nextDouble() * 1.0,
+    );
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        return CustomPaint(
+          painter: _RainPainter(_drops),
+          size: Size.infinite,
+        );
+      },
+    );
+  }
+}
+
+class _RainDrop {
+  _RainDrop({
+    required this.x,
+    required this.y,
+    required this.length,
+    required this.speed,
+    required this.opacity,
+    required this.thickness,
+  });
+
+  double x;
+  double y;
+  double length;
+  double speed;
+  double opacity;
+  double thickness;
+
+  void update() {
+    y += speed;
+    if (y > 1.0) {
+      y = -0.05;
+      x = math.Random().nextDouble();
+    }
+  }
+}
+
+class _RainPainter extends CustomPainter {
+  _RainPainter(this.drops);
+  final List<_RainDrop> drops;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    for (final drop in drops) {
+      drop.update();
+      final paint = Paint()
+        ..color = Colors.white.withValues(alpha: drop.opacity)
+        ..strokeWidth = drop.thickness
+        ..strokeCap = StrokeCap.round;
+
+      final startX = drop.x * size.width;
+      final startY = drop.y * size.height;
+      final endX = startX - 3.0;
+      final endY = startY + drop.length;
+
+      canvas.drawLine(Offset(startX, startY), Offset(endX, endY), paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_RainPainter oldDelegate) => true;
+}
+
 /// Smooth 3D tilt, hover scale, cursor, and mouse glow wrapper widget.
 class HoverCard extends StatefulWidget {
   const HoverCard({
@@ -691,30 +800,11 @@ class _WeatherShellState extends State<WeatherShell> {
         ),
         child: Stack(
           children: [
-            // Background Rain animation overlay for Rainy Scene
+            // Continuous Drop-by-Drop Falling Rain animation overlay for Rainy Scene
             if (_activeScene == BackgroundScene.rainy)
-              Positioned.fill(
+              const Positioned.fill(
                 child: IgnorePointer(
-                  child: Stack(
-                    children: List.generate(
-                      45,
-                      (i) => Positioned(
-                        left: (i * 24.0) % screenWidth,
-                        top: (i * 37.0) % 900,
-                        child: Transform.rotate(
-                          angle: -0.2,
-                          child: Container(
-                            width: 1.6,
-                            height: 14,
-                            decoration: BoxDecoration(
-                              color: Colors.white.withValues(alpha: 0.35),
-                              borderRadius: BorderRadius.circular(4),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
+                  child: RainDropOverlay(dropCount: 75),
                 ),
               ),
 
@@ -910,52 +1000,97 @@ class _WeatherShellState extends State<WeatherShell> {
         ),
       );
 
-  /// Professional Modern Bottom Navigation Bar
-  Widget _bottomNav() => AnimatedContainer(
-        duration: const Duration(milliseconds: 500),
+  /// Ultra-Professional Bottom Navigation Bar with Floating Glass Pill & Active Glow Icons
+  Widget _bottomNav() {
+    final activeIndex = _tab < 5 ? _tab : 0;
+    const items = [
+      (label: 'Today', icon: Icons.wb_sunny_outlined, activeIcon: Icons.wb_sunny_rounded),
+      (label: 'Map', icon: Icons.map_outlined, activeIcon: Icons.map_rounded),
+      (label: 'Hourly', icon: Icons.schedule_outlined, activeIcon: Icons.access_time_filled_rounded),
+      (label: '7 Day', icon: Icons.calendar_month_outlined, activeIcon: Icons.calendar_month_rounded),
+      (label: 'More', icon: Icons.widgets_outlined, activeIcon: Icons.widgets_rounded),
+    ];
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      child: Container(
+        height: 68,
         decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.16),
-          border: Border(
-            top: BorderSide(
-              color: Colors.white.withValues(alpha: 0.22),
-            ),
+          color: Colors.white.withValues(alpha: 0.18),
+          borderRadius: BorderRadius.circular(28),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: 0.28),
+            width: 1.2,
           ),
-        ),
-        child: NavigationBar(
-          height: 68,
-          selectedIndex: _tab < 5 ? _tab : 0,
-          onDestinationSelected: (i) => setState(() => _tab = i),
-          backgroundColor: Colors.transparent,
-          indicatorColor: Colors.white.withValues(alpha: 0.28),
-          destinations: const [
-            NavigationDestination(
-              icon: Icon(Icons.wb_sunny_outlined, color: Colors.white70),
-              selectedIcon: Icon(Icons.wb_sunny_rounded, color: Color(0xffffd166)),
-              label: 'Today',
-            ),
-            NavigationDestination(
-              icon: Icon(Icons.map_outlined, color: Colors.white70),
-              selectedIcon: Icon(Icons.map_rounded, color: Color(0xffffd166)),
-              label: 'Map',
-            ),
-            NavigationDestination(
-              icon: Icon(Icons.access_time_rounded, color: Colors.white70),
-              selectedIcon: Icon(Icons.schedule_rounded, color: Color(0xffffd166)),
-              label: 'Hourly',
-            ),
-            NavigationDestination(
-              icon: Icon(Icons.calendar_month_outlined, color: Colors.white70),
-              selectedIcon: Icon(Icons.calendar_month_rounded, color: Color(0xffffd166)),
-              label: '7 Day',
-            ),
-            NavigationDestination(
-              icon: Icon(Icons.grid_view_outlined, color: Colors.white70),
-              selectedIcon: Icon(Icons.grid_view_rounded, color: Color(0xffffd166)),
-              label: 'More',
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.3),
+              blurRadius: 24,
+              offset: const Offset(0, 8),
             ),
           ],
         ),
-      );
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: List.generate(items.length, (i) {
+            final isSelected = activeIndex == i;
+            final item = items[i];
+            return Expanded(
+              child: MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: GestureDetector(
+                  onTap: () => setState(() => _tab = i),
+                  behavior: HitTestBehavior.opaque,
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 250),
+                    curve: Curves.easeOutCubic,
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    decoration: BoxDecoration(
+                      color: isSelected
+                          ? Colors.white.withValues(alpha: 0.24)
+                          : Colors.transparent,
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        AnimatedScale(
+                          scale: isSelected ? 1.15 : 1.0,
+                          duration: const Duration(milliseconds: 200),
+                          curve: Curves.easeOutBack,
+                          child: Icon(
+                            isSelected ? item.activeIcon : item.icon,
+                            color: isSelected
+                                ? const Color(0xffffd166)
+                                : Colors.white70,
+                            size: 23,
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        AnimatedDefaultTextStyle(
+                          duration: const Duration(milliseconds: 200),
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: isSelected
+                                ? FontWeight.w900
+                                : FontWeight.w600,
+                            color: isSelected
+                                ? const Color(0xffffd166)
+                                : Colors.white70,
+                          ),
+                          child: Text(item.label),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            );
+          }),
+        ),
+      ),
+    );
+  }
 
   Widget _mobileBody() => _tab == 4 ? _moreMenu() : _content();
 
@@ -1259,7 +1394,6 @@ class _WeatherShellState extends State<WeatherShell> {
     final w = _weather;
     if (w == null) return const SizedBox.shrink();
 
-    // Device responsive grid column count
     final gridCount = width > 1100 ? 4 : width > 600 ? 3 : 2;
     final gridAspect = width > 1100 ? 1.7 : width > 600 ? 1.5 : 1.32;
 
